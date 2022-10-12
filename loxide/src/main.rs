@@ -5,8 +5,8 @@ pub mod vm;
 
 use std::{io::BufRead, path::Path};
 
-use compile::compile;
-use vm::InterpretResult;
+use compile::Compiler;
+use vm::{InterpretError, InterpretResult};
 
 use crate::{
     chunk::{Chunk, Opcode},
@@ -45,8 +45,17 @@ fn run_file<P: AsRef<Path>>(path: P) {
 }
 
 fn interpret(src: &str) -> InterpretResult<()> {
-    let tokens = compile(src);
-    Ok(())
+    let chunk = Chunk::new();
+    let mut compiler = Compiler::new(src, chunk);
+    if !compiler.compile() {
+        return Err(InterpretError::CompileError);
+    }
+
+    let chunk = compiler.chunk;
+
+    let mut vm = VM::new(chunk);
+
+    vm.run()
 }
 
 // fn main() {

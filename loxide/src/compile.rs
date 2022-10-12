@@ -1,23 +1,377 @@
-pub fn compile<'a>(src: &'a str) -> Vec<Token<'a>> {
-    let mut scanner = Scanner::new(src);
+use std::mem::MaybeUninit;
 
-    let mut tokens = vec![];
-    loop {
-        let tok = scanner.token();
-        let kind = tok.kind;
-        tokens.push(tok);
-        if kind == TokenKind::Eof {
-            break;
+use crate::{
+    chunk::{Chunk, Opcode},
+    value::Value,
+};
+
+type ParseFn<'s> = fn(&mut Compiler<'s>);
+
+pub struct ParseRule<'s> {
+    prefix: Option<ParseFn<'s>>,
+    infix: Option<ParseFn<'s>>,
+    precedence: Precedence,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Precedence {
+    None = 0,
+    Assignment,
+    Or,
+    And,
+    Equality,
+    Comparison,
+    Term,
+    Factor,
+    Unary,
+    Call,
+    Primary,
+}
+
+impl Precedence {
+    fn from_u8(val: u8) -> Option<Self> {
+        use Precedence::*;
+        match val {
+            0 => Some(None),
+            1 => Some(Assignment),
+            2 => Some(Or),
+            3 => Some(And),
+            4 => Some(Equality),
+            5 => Some(Comparison),
+            6 => Some(Term),
+            7 => Some(Factor),
+            8 => Some(Unary),
+            9 => Some(Call),
+            10 => Some(Primary),
+            _ => Option::None,
+        }
+    }
+}
+
+macro_rules! none_prec {
+    () => {
+        ParseRule {
+            prefix: None,
+            infix: None,
+            precedence: Precedence::None,
+        }
+    };
+}
+
+macro_rules! parse_rule {
+    (pre=$prefix:expr, $prec:expr) => {
+        ParseRule {
+            prefix: Some($prefix),
+            infix: None,
+            precedence: $prec,
+        }
+    };
+    (inf=$infix:expr, $prec:expr) => {
+        ParseRule {
+            prefix: None,
+            infix: Some($infix),
+            precedence: $prec,
+        }
+    };
+    (pre=$prefix:expr, inf=$infix:expr, $prec:expr) => {
+        ParseRule {
+            prefix: Some($prefix),
+            infix: Some($infix),
+            precedence: $prec,
+        }
+    };
+}
+
+pub struct Compiler<'src> {
+    pub parser: Parser<'src>,
+    pub scanner: Scanner<'src>,
+    pub chunk: Chunk,
+}
+
+impl<'src> Compiler<'src> {
+    pub const PARSE_RULES: [ParseRule<'src>; 40] = [
+        // left paren
+        parse_rule!(pre = Compiler::grouping, Precedence::None),
+        // right paren
+        none_prec!(),
+        // left brace
+        none_prec!(),
+        // right brace
+        none_prec!(),
+        // comma
+        none_prec!(),
+        // dot
+        none_prec!(),
+        // minus
+        parse_rule!(
+            pre = Compiler::unary,
+            inf = Compiler::binary,
+            Precedence::Term
+        ),
+        // plus
+        parse_rule!(inf = Compiler::binary, Precedence::Term),
+        // semicolon
+        none_prec!(),
+        // slash
+        parse_rule!(inf = Compiler::binary, Precedence::Factor),
+        // star
+        parse_rule!(inf = Compiler::binary, Precedence::Factor),
+        // bang
+        none_prec!(),
+        // bangequal
+        none_prec!(),
+        // equal
+        none_prec!(),
+        // equalequal
+        none_prec!(),
+        // greater
+        none_prec!(),
+        // greaterequal
+        none_prec!(),
+        // less
+        none_prec!(),
+        // lessequal
+        none_prec!(),
+        // identifier
+        none_prec!(),
+        // string
+        none_prec!(),
+        // number
+        parse_rule!(pre = Compiler::number, Precedence::None),
+        // and
+        none_prec!(),
+        // class
+        none_prec!(),
+        // else
+        none_prec!(),
+        // false
+        none_prec!(),
+        // for
+        none_prec!(),
+        // fun
+        none_prec!(),
+        // if
+        none_prec!(),
+        // nil
+        none_prec!(),
+        // or
+        none_prec!(),
+        // print
+        none_prec!(),
+        // return
+        none_prec!(),
+        // super
+        none_prec!(),
+        // this
+        none_prec!(),
+        // true
+        none_prec!(),
+        // var
+        none_prec!(),
+        // while
+        none_prec!(),
+        // error
+        none_prec!(),
+        // eof
+        none_prec!(),
+    ];
+    pub fn new(src: &'src str, chunk: Chunk) -> Self {
+        let scanner = Scanner::new(src);
+        let parser = Parser::new();
+        Self {
+            parser,
+            scanner,
+            chunk,
         }
     }
 
-    tokens
+    fn get_rule(kind: TokenKind) -> &'src ParseRule<'src> {
+        &Self::PARSE_RULES[kind as u8 as usize]
+    }
+
+    pub fn compile<'a>(&mut self) -> bool {
+        self.advance();
+        self.expression();
+        self.consume(TokenKind::Eof, "Expect end of expression.");
+
+        self.end();
+        !self.parser.had_error
+    }
+
+    fn end(&mut self) {
+        self.emit_return();
+        #[cfg(debug_assertions)]
+        {
+            if !self.parser.had_error {
+                println!("{:?}", self.chunk);
+            }
+        }
+    }
+
+    fn emit_return(&mut self) {
+        self.emit_byte(Opcode::RETURN)
+    }
+
+    fn emit_byte(&mut self, byte: u8) {
+        self.chunk.write(byte, self.parser.prev().line)
+    }
+
+    fn emit_bytes(&mut self, a: u8, b: u8) {
+        self.emit_byte(a);
+        self.emit_byte(b)
+    }
+
+    fn emit_constant(&mut self, value: Value) {
+        let constant = self.make_constant(value);
+        self.emit_bytes(Opcode::CONSTANT, constant);
+    }
+
+    fn make_constant(&mut self, value: Value) -> u8 {
+        let constant_idx = self.chunk.add_constant(value);
+        if constant_idx >= u8::MAX {
+            self.error("Too many constants in one chunk");
+            return 0;
+        }
+
+        constant_idx
+    }
+
+    fn consume(&mut self, kind: TokenKind, msg: &str) {
+        if self.parser.cur().kind == kind {
+            self.advance();
+            return;
+        }
+
+        self.error_at_current(msg)
+    }
+
+    fn advance(&mut self) {
+        self.parser.prev = self.parser.cur;
+
+        loop {
+            self.parser.cur = MaybeUninit::new(self.scanner.token());
+            if self.parser.cur().kind != TokenKind::Error {
+                break;
+            }
+
+            self.error_at_current(self.parser.cur().msg)
+        }
+    }
+
+    fn error_at_current(&mut self, msg: &str) {
+        self.error_at(self.parser.cur(), msg)
+    }
+
+    fn error(&mut self, msg: &str) {
+        self.error_at(self.parser.prev(), msg)
+    }
+
+    fn error_at(&mut self, token: Token<'src>, msg: &str) {
+        eprint!("[line {}] Error", token.line);
+
+        if token.kind == TokenKind::Eof {
+            eprint!(" at end")
+        } else if token.kind == TokenKind::Error {
+        } else {
+            eprint!(" at {}", token.msg)
+        }
+
+        eprint!(": {}\n", msg);
+        self.parser.had_error = true;
+    }
+
+    fn parse_precedence(&mut self, precedence: Precedence) {
+        self.advance();
+        let rule = match Self::get_rule(self.parser.prev().kind).prefix {
+            Some(rule) => rule,
+            None => {
+                self.error("Expect expression");
+                return;
+            }
+        };
+
+        rule(self);
+
+        while precedence as u8 <= Self::get_rule(self.parser.cur().kind).precedence as u8 {
+            self.advance();
+            let infix_rule = match Self::get_rule(self.parser.prev().kind).infix {
+                Some(rule) => rule,
+                None => panic!(),
+            };
+            infix_rule(self);
+        }
+    }
+
+    fn expression(&mut self) {
+        self.parse_precedence(Precedence::Assignment)
+    }
+
+    fn number(&mut self) {
+        let value: f64 = self.parser.prev().msg.parse().unwrap();
+        self.emit_constant(value.into())
+    }
+
+    fn grouping(&mut self) {
+        self.expression();
+        self.consume(TokenKind::RightParen, "Expect ')' after expression.")
+    }
+
+    fn unary(&mut self) {
+        let op_kind = self.parser.prev().kind;
+
+        self.parse_precedence(Precedence::Unary);
+
+        match op_kind {
+            TokenKind::Minus => self.emit_byte(Opcode::NEGATE),
+            _ => (),
+        }
+    }
+
+    fn binary(&mut self) {
+        let op_kind = self.parser.prev().kind;
+        let rule: &ParseRule<'src> = Self::get_rule(op_kind);
+        self.parse_precedence(Precedence::from_u8(rule.precedence as u8 + 1).unwrap());
+
+        match op_kind {
+            TokenKind::Plus => self.emit_byte(Opcode::ADD),
+            TokenKind::Minus => self.emit_byte(Opcode::SUBTRACT),
+            TokenKind::Star => self.emit_byte(Opcode::MULTIPLY),
+            TokenKind::Slash => self.emit_byte(Opcode::DIVIDE),
+            _ => unreachable!(),
+        }
+    }
+}
+
+pub struct Parser<'src> {
+    // probably a bad idea to make maybeuninit but 2 lazy rn
+    cur: MaybeUninit<Token<'src>>,
+    prev: MaybeUninit<Token<'src>>,
+
+    had_error: bool,
+}
+
+impl<'src> Parser<'src> {
+    pub fn new() -> Self {
+        Self {
+            cur: MaybeUninit::uninit(),
+            prev: MaybeUninit::uninit(),
+            had_error: false,
+        }
+    }
+
+    fn cur(&self) -> Token<'src> {
+        unsafe { self.cur.assume_init() }
+    }
+
+    fn prev(&self) -> Token<'src> {
+        unsafe { self.prev.assume_init() }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TokenKind {
     // Single-character tokens.
-    LeftParen,
+    LeftParen = 0,
     RightParen,
     LeftBrace,
     RightBrace,
@@ -66,11 +420,11 @@ pub enum TokenKind {
     Eof,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Copy, Clone, Debug)]
 pub struct Token<'src> {
     kind: TokenKind,
-    msg: &'src str,
     line: u32,
+    msg: &'src str,
 }
 
 pub struct Scanner<'src> {
