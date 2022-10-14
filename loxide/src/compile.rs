@@ -119,19 +119,19 @@ impl<'src> Compiler<'src> {
         // bang
         parse_rule!(pre = Compiler::unary, Precedence::None),
         // bangequal
-        none_prec!(),
+        parse_rule!(inf = Compiler::binary, Precedence::Equality),
         // equal
-        none_prec!(),
+        parse_rule!(inf = Compiler::binary, Precedence::Equality),
         // equalequal
-        none_prec!(),
+        parse_rule!(inf = Compiler::binary, Precedence::Comparison),
         // greater
-        none_prec!(),
+        parse_rule!(inf = Compiler::binary, Precedence::Comparison),
         // greaterequal
-        none_prec!(),
+        parse_rule!(inf = Compiler::binary, Precedence::Comparison),
         // less
-        none_prec!(),
+        parse_rule!(inf = Compiler::binary, Precedence::Comparison),
         // lessequal
-        none_prec!(),
+        parse_rule!(inf = Compiler::binary, Precedence::Comparison),
         // identifier
         none_prec!(),
         // string
@@ -343,6 +343,12 @@ impl<'src> Compiler<'src> {
         self.parse_precedence(Precedence::from_u8(rule.precedence as u8 + 1).unwrap());
 
         match op_kind {
+            TokenKind::BangEqual => self.emit_bytes(Opcode::Equal as u8, Opcode::Not as u8),
+            TokenKind::EqualEqual => self.emit_byte(Opcode::Equal as u8),
+            TokenKind::Greater => self.emit_byte(Opcode::Greater as u8),
+            TokenKind::GreaterEqual => self.emit_bytes(Opcode::Less as u8, Opcode::Not as u8),
+            TokenKind::Less => self.emit_byte(Opcode::Less as u8),
+            TokenKind::LessEqual => self.emit_bytes(Opcode::Greater as u8, Opcode::Not as u8),
             TokenKind::Plus => self.emit_byte(Opcode::Add as u8),
             TokenKind::Minus => self.emit_byte(Opcode::Subtract as u8),
             TokenKind::Star => self.emit_byte(Opcode::Multiply as u8),

@@ -15,6 +15,9 @@ pub enum Opcode {
     True,
     False,
     Not,
+    Equal,
+    Greater,
+    Less,
 }
 
 impl Opcode {
@@ -32,6 +35,9 @@ impl Opcode {
             8 => Some(True),
             9 => Some(False),
             10 => Some(Not),
+            11 => Some(Equal),
+            12 => Some(Greater),
+            13 => Some(Less),
             _ => None,
         }
     }
@@ -84,7 +90,10 @@ impl Chunk {
         let op = Opcode::from_u8(instr);
         match op {
             Some(
-                Opcode::Not
+                Opcode::Equal
+                | Opcode::Greater
+                | Opcode::Less
+                | Opcode::Not
                 | Opcode::True
                 | Opcode::False
                 | Opcode::Nil

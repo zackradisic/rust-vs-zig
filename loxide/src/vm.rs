@@ -96,6 +96,12 @@ impl VM {
             let byte = self.read_byte();
 
             match Opcode::from_u8(byte) {
+                Some(Opcode::Equal) => {
+                    let b = self.pop();
+                    let a = self.pop();
+
+                    self.push(Value::Bool(a == b))
+                }
                 Some(Opcode::Not) => {
                     let top = self.pop();
                     self.push(Value::Bool(top.is_falsey()))
@@ -121,6 +127,8 @@ impl VM {
                 Some(Opcode::Subtract) => self.binary_op(std::ops::Sub::sub)?,
                 Some(Opcode::Multiply) => self.binary_op(std::ops::Mul::mul)?,
                 Some(Opcode::Divide) => self.binary_op(std::ops::Div::div)?,
+                Some(Opcode::Greater) => self.binary_op(Value::gt_owned)?,
+                Some(Opcode::Less) => self.binary_op(Value::lt_owned)?,
                 otherwise => panic!("Unknown opcode {:?}", otherwise),
             }
         }

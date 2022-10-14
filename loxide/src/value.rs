@@ -17,11 +17,43 @@ impl Value {
             _ => false,
         }
     }
+
+    pub fn gt_owned(self, other: Self) -> Value {
+        self.gt(&other).into()
+    }
+    pub fn lt_owned(self, other: Self) -> Value {
+        self.lt(&other).into()
+    }
+}
+
+impl PartialOrd for Value {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        match (self, other) {
+            (Value::Number(a), Value::Number(b)) => a.partial_cmp(b),
+            _ => None,
+        }
+    }
+}
+
+impl PartialEq for Value {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Bool(l0), Self::Bool(r0)) => l0 == r0,
+            (Self::Number(l0), Self::Number(r0)) => l0 == r0,
+            _ => core::mem::discriminant(self) == core::mem::discriminant(other),
+        }
+    }
 }
 
 impl From<f64> for Value {
     fn from(val: f64) -> Self {
         Self::Number(val)
+    }
+}
+
+impl From<bool> for Value {
+    fn from(val: bool) -> Self {
+        Self::Bool(val)
     }
 }
 
