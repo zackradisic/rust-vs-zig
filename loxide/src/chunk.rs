@@ -14,6 +14,10 @@ impl Opcode {
     pub const SUBTRACT: u8 = 4;
     pub const MULTIPLY: u8 = 5;
     pub const DIVIDE: u8 = 6;
+    pub const NIL: u8 = 7;
+    pub const TRUE: u8 = 8;
+    pub const FALSE: u8 = 9;
+    pub const NOT: u8 = 10;
 }
 
 pub struct Chunk {
@@ -61,7 +65,11 @@ impl Chunk {
     pub fn disassemble_instruction(&self, offset: &mut usize) -> Option<Instruction> {
         let instr = self.code[*offset];
         match instr.0 {
-            Opcode::ADD
+            Opcode::NOT
+            | Opcode::TRUE
+            | Opcode::FALSE
+            | Opcode::NIL
+            | Opcode::ADD
             | Opcode::SUBTRACT
             | Opcode::MULTIPLY
             | Opcode::DIVIDE
@@ -116,6 +124,10 @@ impl std::fmt::Debug for Instruction {
                     Opcode::SUBTRACT => "Subtract",
                     Opcode::MULTIPLY => "Multiply",
                     Opcode::DIVIDE => "Divide",
+                    Opcode::TRUE => "True",
+                    Opcode::FALSE => "False",
+                    Opcode::NIL => "Nil",
+                    Opcode::NOT => "Not",
                     other => panic!("Invalid opcode {:?}", other),
                 };
                 write!(f, "{:?}", string)

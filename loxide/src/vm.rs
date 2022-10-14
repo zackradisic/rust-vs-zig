@@ -44,10 +44,32 @@ impl VM {
     }
 
     #[inline]
-    fn binary_op<F: FnOnce(Value, Value) -> Value>(&mut self, f: F) {
+    fn binary_op<F: FnOnce(Value, Value) -> Value>(&mut self, f: F) -> InterpretResult<()> {
+        if !matches!(self.peek(0), Value::Number(_)) || !matches!(self.peek(1), Value::Number(_)) {
+            self.runtime_error("Operands must be numbers.");
+            return Err(InterpretError::RuntimeError);
+        }
+
         let b = self.pop();
         let a = self.pop();
         self.push(f(a, b));
+
+        Ok(())
+    }
+
+    fn reset_stack(&mut self) {}
+
+    fn runtime_error(&mut self, err: &str) {
+        eprintln!("{}", err);
+
+        let instr_idx = self.instruction_index - 1;
+        let line = self.chunk.lines[instr_idx];
+        println!("[line {}] in script", line);
+        self.reset_stack();
+    }
+
+    fn peek(&self, distance: u32) -> Value {
+        unsafe { self.stack[self.stack_top as usize - 1 - distance as usize].assume_init() }
     }
 
     pub fn run(&mut self) -> InterpretResult<()> {
@@ -74,9 +96,18 @@ impl VM {
             let byte = self.read_byte();
 
             match byte {
-                Opcode::NEGATE => {
+                Opcode::NOT => {
                     let top = self.pop();
-                    self.push(Value(-top.0))
+                    self.push(Value::Bool(top.is_falsey()))
+                }
+                Opcode::NEGATE => {
+                    if !matches!(self.peek(0), Value::Bool(_) | Value::Number(_)) {
+                        self.runtime_error("Operand must be a number.");
+                        return Err(InterpretError::RuntimeError);
+                    }
+
+                    let negated = -self.pop();
+                    self.push(negated)
                 }
                 Opcode::RETURN => {
                     println!("return {:?}", self.pop());
@@ -86,10 +117,10 @@ impl VM {
                     let constant = self.read_constant();
                     self.push(constant);
                 }
-                Opcode::ADD => self.binary_op(std::ops::Add::add),
-                Opcode::SUBTRACT => self.binary_op(std::ops::Sub::sub),
-                Opcode::MULTIPLY => self.binary_op(std::ops::Mul::mul),
-                Opcode::DIVIDE => self.binary_op(std::ops::Div::div),
+                Opcode::ADD => self.binary_op(std::ops::Add::add)?,
+                Opcode::SUBTRACT => self.binary_op(std::ops::Sub::sub)?,
+                Opcode::MULTIPLY => self.binary_op(std::ops::Mul::mul)?,
+                Opcode::DIVIDE => self.binary_op(std::ops::Div::div)?,
                 otherwise => panic!("Unknown opcode {:?}", otherwise),
             }
         }

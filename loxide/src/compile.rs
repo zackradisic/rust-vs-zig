@@ -117,7 +117,7 @@ impl<'src> Compiler<'src> {
         // star
         parse_rule!(inf = Compiler::binary, Precedence::Factor),
         // bang
-        none_prec!(),
+        parse_rule!(pre = Compiler::unary, Precedence::None),
         // bangequal
         none_prec!(),
         // equal
@@ -145,7 +145,7 @@ impl<'src> Compiler<'src> {
         // else
         none_prec!(),
         // false
-        none_prec!(),
+        parse_rule!(pre = Compiler::literal, Precedence::None),
         // for
         none_prec!(),
         // fun
@@ -153,7 +153,7 @@ impl<'src> Compiler<'src> {
         // if
         none_prec!(),
         // nil
-        none_prec!(),
+        parse_rule!(pre = Compiler::literal, Precedence::None),
         // or
         none_prec!(),
         // print
@@ -165,7 +165,7 @@ impl<'src> Compiler<'src> {
         // this
         none_prec!(),
         // true
-        none_prec!(),
+        parse_rule!(pre = Compiler::literal, Precedence::None),
         // var
         none_prec!(),
         // while
@@ -311,6 +311,15 @@ impl<'src> Compiler<'src> {
         self.emit_constant(value.into())
     }
 
+    fn literal(&mut self) {
+        match self.parser.prev().kind {
+            TokenKind::True => self.emit_byte(Opcode::TRUE),
+            TokenKind::False => self.emit_byte(Opcode::FALSE),
+            TokenKind::Nil => self.emit_byte(Opcode::NIL),
+            _ => return,
+        }
+    }
+
     fn grouping(&mut self) {
         self.expression();
         self.consume(TokenKind::RightParen, "Expect ')' after expression.")
@@ -323,6 +332,7 @@ impl<'src> Compiler<'src> {
 
         match op_kind {
             TokenKind::Minus => self.emit_byte(Opcode::NEGATE),
+            TokenKind::Bang => self.emit_byte(Opcode::NOT),
             _ => (),
         }
     }
@@ -359,10 +369,12 @@ impl<'src> Parser<'src> {
         }
     }
 
+    #[inline]
     fn cur(&self) -> Token<'src> {
         unsafe { self.cur.assume_init() }
     }
 
+    #[inline]
     fn prev(&self) -> Token<'src> {
         unsafe { self.prev.assume_init() }
     }

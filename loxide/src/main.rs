@@ -15,18 +15,19 @@ use crate::{
 };
 
 fn main() {
-    let mut args = std::env::args();
-    let _ = args.next();
+    run_file("./test.lox")
+    // let mut args = std::env::args();
+    // let _ = args.next();
 
-    match args.len() {
-        0 => {
-            repl();
-        }
-        1 => {
-            run_file(args.next().unwrap());
-        }
-        _ => panic!(),
-    }
+    // match args.len() {
+    //     0 => {
+    //         repl();
+    //     }
+    //     1 => {
+    //         run_file(args.next().unwrap());
+    //     }
+    //     _ => panic!(),
+    // }
 }
 
 fn repl() {
@@ -83,3 +84,18 @@ fn interpret(src: &str) -> InterpretResult<()> {
 //     let mut vm = VM::new(chunk);
 //     vm.run().unwrap();
 // }
+
+#[cfg(test)]
+mod test {
+
+    #[test]
+    fn test() {
+        enum Opcode {
+            Nil,
+            True,
+            False,
+        }
+
+        println!("SIZE: {}", std::mem::size_of::<Option<Opcode>>());
+    }
+}
