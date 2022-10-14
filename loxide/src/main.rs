@@ -15,19 +15,20 @@ use crate::{
 };
 
 fn main() {
-    run_file("./test.lox")
-    // let mut args = std::env::args();
-    // let _ = args.next();
+    // run_file("./test.lox")
 
-    // match args.len() {
-    //     0 => {
-    //         repl();
-    //     }
-    //     1 => {
-    //         run_file(args.next().unwrap());
-    //     }
-    //     _ => panic!(),
-    // }
+    let mut args = std::env::args();
+    let _ = args.next();
+
+    match args.len() {
+        0 => {
+            repl();
+        }
+        1 => {
+            run_file(args.next().unwrap());
+        }
+        _ => panic!(),
+    }
 }
 
 fn repl() {
@@ -91,9 +92,36 @@ mod test {
     #[test]
     fn test() {
         enum Opcode {
-            Nil,
+            Nil = 0,
             True,
             False,
+            // False2,
+            // False3,
+            // False4,
+            // False5,
+            // False6,
+            // False7,
+            // False8,
+            // False9,
+            // False10,
+            // Falseasdasd,
+            // asfasdf,
+            // assafsdfsfasdf,
+            // asfasfasdssafsdfsfasdf,
+            // asfasdfasfasfasdssafsdfsfasdf,
+            // asfasdfasdfsfasdfasfasfasdssafsdfsfasdf,
+            // asfasdfsfasdfasdfsfasdfasfasfasdssafsdfsfasdf,
+            // asfasdfasdfsfasdfasfasfasdssafsdfsfasdfsdasd,
+            // asdasfasdfasdfsfasdfasfasfasdssafsdfsfasdf,
+            // a,
+            // b,
+            // c,
+            // d,
+            // e,
+            // f,
+            // g,
+            // h,
+            // i,
         }
 
         println!("SIZE: {}", std::mem::size_of::<Option<Opcode>>());

@@ -209,7 +209,7 @@ impl<'src> Compiler<'src> {
     }
 
     fn emit_return(&mut self) {
-        self.emit_byte(Opcode::RETURN)
+        self.emit_byte(Opcode::Return as u8)
     }
 
     fn emit_byte(&mut self, byte: u8) {
@@ -223,7 +223,7 @@ impl<'src> Compiler<'src> {
 
     fn emit_constant(&mut self, value: Value) {
         let constant = self.make_constant(value);
-        self.emit_bytes(Opcode::CONSTANT, constant);
+        self.emit_bytes(Opcode::Constant as u8, constant);
     }
 
     fn make_constant(&mut self, value: Value) -> u8 {
@@ -313,9 +313,9 @@ impl<'src> Compiler<'src> {
 
     fn literal(&mut self) {
         match self.parser.prev().kind {
-            TokenKind::True => self.emit_byte(Opcode::TRUE),
-            TokenKind::False => self.emit_byte(Opcode::FALSE),
-            TokenKind::Nil => self.emit_byte(Opcode::NIL),
+            TokenKind::True => self.emit_byte(Opcode::True as u8),
+            TokenKind::False => self.emit_byte(Opcode::False as u8),
+            TokenKind::Nil => self.emit_byte(Opcode::Nil as u8),
             _ => return,
         }
     }
@@ -331,8 +331,8 @@ impl<'src> Compiler<'src> {
         self.parse_precedence(Precedence::Unary);
 
         match op_kind {
-            TokenKind::Minus => self.emit_byte(Opcode::NEGATE),
-            TokenKind::Bang => self.emit_byte(Opcode::NOT),
+            TokenKind::Minus => self.emit_byte(Opcode::Negate as u8),
+            TokenKind::Bang => self.emit_byte(Opcode::Not as u8),
             _ => (),
         }
     }
@@ -343,10 +343,10 @@ impl<'src> Compiler<'src> {
         self.parse_precedence(Precedence::from_u8(rule.precedence as u8 + 1).unwrap());
 
         match op_kind {
-            TokenKind::Plus => self.emit_byte(Opcode::ADD),
-            TokenKind::Minus => self.emit_byte(Opcode::SUBTRACT),
-            TokenKind::Star => self.emit_byte(Opcode::MULTIPLY),
-            TokenKind::Slash => self.emit_byte(Opcode::DIVIDE),
+            TokenKind::Plus => self.emit_byte(Opcode::Add as u8),
+            TokenKind::Minus => self.emit_byte(Opcode::Subtract as u8),
+            TokenKind::Star => self.emit_byte(Opcode::Multiply as u8),
+            TokenKind::Slash => self.emit_byte(Opcode::Divide as u8),
             _ => unreachable!(),
         }
     }

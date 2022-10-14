@@ -95,12 +95,12 @@ impl VM {
 
             let byte = self.read_byte();
 
-            match byte {
-                Opcode::NOT => {
+            match Opcode::from_u8(byte) {
+                Some(Opcode::Not) => {
                     let top = self.pop();
                     self.push(Value::Bool(top.is_falsey()))
                 }
-                Opcode::NEGATE => {
+                Some(Opcode::Negate) => {
                     if !matches!(self.peek(0), Value::Bool(_) | Value::Number(_)) {
                         self.runtime_error("Operand must be a number.");
                         return Err(InterpretError::RuntimeError);
@@ -109,18 +109,18 @@ impl VM {
                     let negated = -self.pop();
                     self.push(negated)
                 }
-                Opcode::RETURN => {
+                Some(Opcode::Return) => {
                     println!("return {:?}", self.pop());
                     return Ok(());
                 }
-                Opcode::CONSTANT => {
+                Some(Opcode::Constant) => {
                     let constant = self.read_constant();
                     self.push(constant);
                 }
-                Opcode::ADD => self.binary_op(std::ops::Add::add)?,
-                Opcode::SUBTRACT => self.binary_op(std::ops::Sub::sub)?,
-                Opcode::MULTIPLY => self.binary_op(std::ops::Mul::mul)?,
-                Opcode::DIVIDE => self.binary_op(std::ops::Div::div)?,
+                Some(Opcode::Add) => self.binary_op(std::ops::Add::add)?,
+                Some(Opcode::Subtract) => self.binary_op(std::ops::Sub::sub)?,
+                Some(Opcode::Multiply) => self.binary_op(std::ops::Mul::mul)?,
+                Some(Opcode::Divide) => self.binary_op(std::ops::Div::div)?,
                 otherwise => panic!("Unknown opcode {:?}", otherwise),
             }
         }
@@ -128,7 +128,7 @@ impl VM {
 
     #[inline]
     fn read_byte(&mut self) -> u8 {
-        let ret = self.chunk[self.instruction_index].0;
+        let ret = self.chunk[self.instruction_index];
         self.instruction_index += 1;
         ret
     }

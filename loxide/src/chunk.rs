@@ -2,26 +2,43 @@ use std::ops::Deref;
 
 use crate::value::{Value, ValueArray};
 
-#[derive(Clone, Copy, PartialEq)]
-#[repr(transparent)]
-pub struct Opcode(pub u8);
+#[derive(Copy, Clone, Debug, PartialEq, PartialOrd)]
+pub enum Opcode {
+    Return = 0,
+    Constant,
+    Negate,
+    Add,
+    Subtract,
+    Multiply,
+    Divide,
+    Nil,
+    True,
+    False,
+    Not,
+}
 
 impl Opcode {
-    pub const RETURN: u8 = 0;
-    pub const CONSTANT: u8 = 1;
-    pub const NEGATE: u8 = 2;
-    pub const ADD: u8 = 3;
-    pub const SUBTRACT: u8 = 4;
-    pub const MULTIPLY: u8 = 5;
-    pub const DIVIDE: u8 = 6;
-    pub const NIL: u8 = 7;
-    pub const TRUE: u8 = 8;
-    pub const FALSE: u8 = 9;
-    pub const NOT: u8 = 10;
+    pub fn from_u8(val: u8) -> Option<Self> {
+        use Opcode::*;
+        match val {
+            0 => Some(Return),
+            1 => Some(Constant),
+            2 => Some(Negate),
+            3 => Some(Add),
+            4 => Some(Subtract),
+            5 => Some(Multiply),
+            6 => Some(Divide),
+            7 => Some(Nil),
+            8 => Some(True),
+            9 => Some(False),
+            10 => Some(Not),
+            _ => None,
+        }
+    }
 }
 
 pub struct Chunk {
-    pub code: Vec<Opcode>,
+    pub code: Vec<u8>,
     pub constants: ValueArray,
     pub lines: Vec<u32>,
 }
@@ -50,7 +67,7 @@ impl Chunk {
     }
 
     pub fn write(&mut self, op: u8, line: u32) {
-        self.code.push(Opcode(op));
+        self.code.push(op);
         self.lines.push(line);
     }
 
@@ -64,33 +81,36 @@ impl Chunk {
     /// the next one
     pub fn disassemble_instruction(&self, offset: &mut usize) -> Option<Instruction> {
         let instr = self.code[*offset];
-        match instr.0 {
-            Opcode::NOT
-            | Opcode::TRUE
-            | Opcode::FALSE
-            | Opcode::NIL
-            | Opcode::ADD
-            | Opcode::SUBTRACT
-            | Opcode::MULTIPLY
-            | Opcode::DIVIDE
-            | Opcode::NEGATE
-            | Opcode::RETURN => {
+        let op = Opcode::from_u8(instr);
+        match op {
+            Some(
+                Opcode::Not
+                | Opcode::True
+                | Opcode::False
+                | Opcode::Nil
+                | Opcode::Add
+                | Opcode::Subtract
+                | Opcode::Multiply
+                | Opcode::Divide
+                | Opcode::Negate
+                | Opcode::Return,
+            ) => {
                 *offset += 1;
-                Some(Instruction::Simple(instr))
+                Some(Instruction::Simple(op.unwrap()))
             }
-            Opcode::CONSTANT => {
+            Some(Opcode::Constant) => {
                 let constant_idx = self.code[*offset + 1];
-                let constant = self.constants[constant_idx.0 as usize];
+                let constant = self.constants[constant_idx as usize];
                 *offset += 2;
                 Some(Instruction::Constant(constant))
             }
-            otherwise => panic!("Invalid opcode {}", otherwise),
+            otherwise => panic!("Invalid opcode {:?}", otherwise),
         }
     }
 }
 
 impl Deref for Chunk {
-    type Target = Vec<Opcode>;
+    type Target = Vec<u8>;
 
     fn deref(&self) -> &Self::Target {
         &self.code
@@ -116,21 +136,8 @@ pub enum Instruction {
 impl std::fmt::Debug for Instruction {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Instruction::Simple(arg0) => {
-                let string = match arg0.0 {
-                    Opcode::RETURN => "Return",
-                    Opcode::NEGATE => "Negate",
-                    Opcode::ADD => "Add",
-                    Opcode::SUBTRACT => "Subtract",
-                    Opcode::MULTIPLY => "Multiply",
-                    Opcode::DIVIDE => "Divide",
-                    Opcode::TRUE => "True",
-                    Opcode::FALSE => "False",
-                    Opcode::NIL => "Nil",
-                    Opcode::NOT => "Not",
-                    other => panic!("Invalid opcode {:?}", other),
-                };
-                write!(f, "{:?}", string)
+            Instruction::Simple(op) => {
+                write!(f, "{:?}", op)
             }
             Instruction::Constant(val) => f.debug_tuple("Constant").field(val).finish(),
         }
