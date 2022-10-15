@@ -2,6 +2,7 @@ use std::mem::MaybeUninit;
 
 use crate::{
     chunk::{Chunk, Opcode},
+    obj::{Obj, ObjList, ObjString},
     value::Value,
 };
 
@@ -86,6 +87,7 @@ pub struct Compiler<'src> {
     pub parser: Parser<'src>,
     pub scanner: Scanner<'src>,
     pub chunk: Chunk,
+    pub obj_list: ObjList,
 }
 
 impl<'src> Compiler<'src> {
@@ -135,7 +137,7 @@ impl<'src> Compiler<'src> {
         // identifier
         none_prec!(),
         // string
-        none_prec!(),
+        parse_rule!(pre = Compiler::string, Precedence::None),
         // number
         parse_rule!(pre = Compiler::number, Precedence::None),
         // and
@@ -178,7 +180,9 @@ impl<'src> Compiler<'src> {
     pub fn new(src: &'src str, chunk: Chunk) -> Self {
         let scanner = Scanner::new(src);
         let parser = Parser::new();
+
         Self {
+            obj_list: Default::default(),
             parser,
             scanner,
             chunk,
@@ -309,6 +313,16 @@ impl<'src> Compiler<'src> {
     fn number(&mut self) {
         let value: f64 = self.parser.prev().msg.parse().unwrap();
         self.emit_constant(value.into())
+    }
+
+    fn string(&mut self) {
+        let string = self.parser.prev().msg;
+
+        // get rid of the quotations
+        let obj_str =
+            ObjString::copy_string(&mut self.obj_list, &string[1..string.len() - 1]) as *mut Obj;
+
+        self.emit_constant(Value::Obj(obj_str));
     }
 
     fn literal(&mut self) {

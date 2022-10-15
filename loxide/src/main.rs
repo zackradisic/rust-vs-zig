@@ -1,5 +1,6 @@
 pub mod chunk;
 pub mod compile;
+pub mod obj;
 pub mod value;
 pub mod vm;
 
@@ -46,84 +47,37 @@ fn run_file<P: AsRef<Path>>(path: P) {
     interpret(&string).unwrap();
 }
 
-fn interpret(src: &str) -> InterpretResult<()> {
+fn interpret(src: &str) -> InterpretResult<VM> {
     let chunk = Chunk::new();
-    let mut compiler = Compiler::new(src, chunk);
-    if !compiler.compile() {
-        return Err(InterpretError::CompileError);
-    }
 
-    let chunk = compiler.chunk;
+    let (chunk, obj_list) = {
+        let mut compiler = Compiler::new(src, chunk);
+        if !compiler.compile() {
+            return Err(InterpretError::CompileError);
+        }
+        (compiler.chunk, compiler.obj_list)
+    };
 
-    let mut vm = VM::new(chunk);
+    let mut vm = VM::new(chunk, obj_list);
 
-    vm.run()
+    vm.run().map(|_| vm)
 }
-
-// fn main() {
-//     let mut chunk = Chunk::new();
-
-//     let mut constant_idx = chunk.add_constant(Value(0.0));
-//     chunk.write(Opcode::CONSTANT, 0);
-//     chunk.write(constant_idx, 0);
-
-//     constant_idx = chunk.add_constant(3.4.into());
-//     chunk.write(Opcode::CONSTANT, 0);
-//     chunk.write(constant_idx, 0);
-
-//     chunk.write(Opcode::ADD, 0);
-
-//     constant_idx = chunk.add_constant(5.6.into());
-//     chunk.write(Opcode::CONSTANT, 0);
-//     chunk.write(constant_idx, 0);
-
-//     chunk.write(Opcode::DIVIDE, 0);
-
-//     chunk.write(Opcode::NEGATE, 0);
-//     chunk.write(Opcode::RETURN, 0);
-
-//     let mut vm = VM::new(chunk);
-//     vm.run().unwrap();
-// }
 
 #[cfg(test)]
 mod test {
+    use std::{alloc::Layout, ptr::NonNull};
+
+    use crate::interpret;
 
     #[test]
-    fn test() {
-        enum Opcode {
-            Nil = 0,
-            True,
-            False,
-            // False2,
-            // False3,
-            // False4,
-            // False5,
-            // False6,
-            // False7,
-            // False8,
-            // False9,
-            // False10,
-            // Falseasdasd,
-            // asfasdf,
-            // assafsdfsfasdf,
-            // asfasfasdssafsdfsfasdf,
-            // asfasdfasfasfasdssafsdfsfasdf,
-            // asfasdfasdfsfasdfasfasfasdssafsdfsfasdf,
-            // asfasdfsfasdfasdfsfasdfasfasfasdssafsdfsfasdf,
-            // asfasdfasdfsfasdfasfasfasdssafsdfsfasdfsdasd,
-            // asdasfasdfasdfsfasdfasfasfasdssafsdfsfasdf,
-            // a,
-            // b,
-            // c,
-            // d,
-            // e,
-            // f,
-            // g,
-            // h,
-            // i,
-        }
+    fn string() {
+        let src = r#""hello" + " sir""#;
+        let vm = interpret(src).unwrap();
 
-        println!("SIZE: {}", std::mem::size_of::<Option<Opcode>>());
+        {
+            assert_eq!(vm.stack_top, 1);
+            let top = unsafe { vm.stack[0].assume_init() };
+            assert_eq!(top.as_str(), Some("hello sir"))
+        }
     }
 }

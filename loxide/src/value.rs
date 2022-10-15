@@ -1,15 +1,52 @@
-use std::ops::{Add, Div, Mul, Neg, Sub};
+use std::{
+    fmt::Debug,
+    ops::{Add, Div, Mul, Neg, Sub},
+};
+
+use crate::obj::{Obj, ObjKind, ObjString};
 
 pub type ValueArray = Vec<Value>;
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone)]
 pub enum Value {
     Bool(bool),
     Number(f64),
     Nil,
+    Obj(*mut Obj),
 }
 
 impl Value {
+    pub fn is_str(&self) -> bool {
+        match *self {
+            Value::Obj(obj) => unsafe { (*obj).kind == ObjKind::Str },
+            _ => false,
+        }
+    }
+
+    pub fn as_obj_str(&self) -> Option<&ObjString> {
+        match *self {
+            Value::Obj(obj) => unsafe {
+                let kind = (*obj).kind;
+                match kind {
+                    ObjKind::Str => Some(&*(obj as *mut ObjString)),
+                }
+            },
+            _ => None,
+        }
+    }
+
+    pub fn as_str(&self) -> Option<&str> {
+        match *self {
+            Value::Obj(obj) => unsafe {
+                let kind = (*obj).kind;
+                match kind {
+                    ObjKind::Str => Some((&*(obj as *mut ObjString)).as_str()),
+                }
+            },
+            _ => None,
+        }
+    }
+
     pub fn is_falsey(self) -> bool {
         match self {
             Value::Bool(b) => !b,
@@ -21,8 +58,45 @@ impl Value {
     pub fn gt_owned(self, other: Self) -> Value {
         self.gt(&other).into()
     }
+
     pub fn lt_owned(self, other: Self) -> Value {
         self.lt(&other).into()
+    }
+
+    fn objs_eq(a: *mut Obj, b: *mut Obj) -> bool {
+        unsafe {
+            if (*a).kind != (*b).kind {
+                return false;
+            }
+
+            match (*a).kind {
+                ObjKind::Str => {
+                    let a_str = (&*(a as *mut ObjString)).as_str();
+                    let b_str = (&*(b as *mut ObjString)).as_str();
+
+                    a_str == b_str
+                }
+            }
+        }
+    }
+}
+
+impl Debug for Value {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Bool(arg0) => f.debug_tuple("Bool").field(arg0).finish(),
+            Self::Number(arg0) => f.debug_tuple("Number").field(arg0).finish(),
+            Self::Nil => write!(f, "Nil"),
+            Self::Obj(arg0) => {
+                let kind = unsafe { (**arg0).kind };
+                match kind {
+                    ObjKind::Str => {
+                        let obj_str = unsafe { &*((*arg0) as *mut ObjString) };
+                        write!(f, "{:?}", obj_str.as_str())
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -37,9 +111,10 @@ impl PartialOrd for Value {
 
 impl PartialEq for Value {
     fn eq(&self, other: &Self) -> bool {
-        match (self, other) {
+        match (*self, *other) {
             (Self::Bool(l0), Self::Bool(r0)) => l0 == r0,
             (Self::Number(l0), Self::Number(r0)) => l0 == r0,
+            (Self::Obj(a), Self::Obj(b)) => Self::objs_eq(a, b),
             _ => core::mem::discriminant(self) == core::mem::discriminant(other),
         }
     }
