@@ -1,12 +1,13 @@
 use std::{
     alloc::{self, Layout},
+    borrow::Cow,
     mem::MaybeUninit,
     ptr::{self, NonNull},
 };
 
 use crate::{
     chunk::{Chunk, InstructionDebug, Opcode},
-    obj::{Obj, ObjList, ObjString},
+    obj::{Obj, ObjKind, ObjList, ObjString},
     table::{LoxHash, Table},
     value::Value,
 };
@@ -29,6 +30,7 @@ pub struct VM {
     pub stack_top: u32,
 
     obj_list: ObjList,
+    globals: Table,
     strings: Table,
 }
 
@@ -37,6 +39,7 @@ impl VM {
         Self {
             chunk,
             obj_list,
+            globals: Table::new(),
             strings,
             instruction_index: 0,
             stack: [MaybeUninit::uninit(); STACK_MAX],
@@ -57,7 +60,7 @@ impl VM {
     #[inline]
     fn binary_op<F: FnOnce(Value, Value) -> Value>(&mut self, f: F) -> InterpretResult<()> {
         if !matches!(self.peek(0), Value::Number(_)) || !matches!(self.peek(1), Value::Number(_)) {
-            self.runtime_error("Operands must be two numbers or two strings.");
+            self.runtime_error("Operands must be two numbers or two strings.".into());
             return Err(InterpretError::RuntimeError);
         }
 
@@ -72,7 +75,7 @@ impl VM {
         self.stack_top = 0;
     }
 
-    fn runtime_error(&mut self, err: &str) {
+    fn runtime_error<'a>(&mut self, err: Cow<'a, str>) {
         eprintln!("{}", err);
 
         let instr_idx = self.instruction_index - 1;
@@ -146,6 +149,62 @@ impl VM {
             let byte = self.read_byte();
 
             match Opcode::from_u8(byte) {
+                Some(Opcode::SetGlobal) => {
+                    let name = self
+                        .read_constant()
+                        .as_obj_str_ptr()
+                        .expect("Expect string constant for global variable name.");
+
+                    let new_val = self.peek(0);
+                    println!("{} = {:?}", unsafe { name.as_ref() }.as_str(), self.peek(0));
+
+                    if self.globals.set(name.as_ptr(), new_val) {
+                        self.globals.delete(name.as_ptr());
+                        self.runtime_error(
+                            format!("Undefined variable: {}", unsafe { name.as_ref().as_str() })
+                                .into(),
+                        );
+
+                        return Err(InterpretError::RuntimeError);
+                    }
+                }
+                Some(Opcode::GetGlobal) => {
+                    let name = self
+                        .read_constant()
+                        .as_obj_str_ptr()
+                        .expect("Expect string constant for global variable name.");
+
+                    let val = match self.globals.get(name.as_ptr()) {
+                        Some(global) => global,
+                        None => {
+                            self.runtime_error(
+                                format!("Undefined variable: {}", unsafe {
+                                    name.as_ref().as_str()
+                                })
+                                .into(),
+                            );
+
+                            return Err(InterpretError::RuntimeError);
+                        }
+                    };
+
+                    self.push(val);
+                }
+                Some(Opcode::DefineGlobal) => {
+                    let name = self
+                        .read_constant()
+                        .as_obj_str_ptr()
+                        .expect("Expect string constant for global variable name.");
+
+                    self.globals.set(name.as_ptr(), self.peek(0));
+                    self.pop();
+                }
+                Some(Opcode::Pop) => {
+                    self.pop();
+                }
+                Some(Opcode::Print) => {
+                    println!("print: {:?}", self.pop());
+                }
                 Some(Opcode::Equal) => {
                     let b = self.pop();
                     let a = self.pop();
@@ -158,7 +217,7 @@ impl VM {
                 }
                 Some(Opcode::Negate) => {
                     if !matches!(self.peek(0), Value::Bool(_) | Value::Number(_)) {
-                        self.runtime_error("Operand must be a number.");
+                        self.runtime_error("Operand must be a number.".into());
                         return Err(InterpretError::RuntimeError);
                     }
 
@@ -167,7 +226,7 @@ impl VM {
                 }
                 Some(Opcode::Return) => {
                     // println!("return {:?}", self.pop());
-                    println!("return {:?}", self.peek(self.stack_top - 1));
+                    // println!("return {:?}", self.peek(self.stack_top - 1));
                     return Ok(());
                 }
                 Some(Opcode::Constant) => {
@@ -227,5 +286,6 @@ impl Drop for VM {
     fn drop(&mut self) {
         self.free_objects();
         self.free_interned_strings();
+        Table::free(&mut self.globals);
     }
 }

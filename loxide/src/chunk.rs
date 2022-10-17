@@ -18,6 +18,11 @@ pub enum Opcode {
     Equal,
     Greater,
     Less,
+    Print,
+    Pop,
+    DefineGlobal,
+    GetGlobal,
+    SetGlobal,
 }
 
 impl Opcode {
@@ -38,6 +43,11 @@ impl Opcode {
             11 => Some(Equal),
             12 => Some(Greater),
             13 => Some(Less),
+            14 => Some(Print),
+            15 => Some(Pop),
+            16 => Some(DefineGlobal),
+            17 => Some(GetGlobal),
+            18 => Some(SetGlobal),
             _ => None,
         }
     }
@@ -90,7 +100,9 @@ impl Chunk {
         let op = Opcode::from_u8(instr);
         match op {
             Some(
-                Opcode::Equal
+                Opcode::Pop
+                | Opcode::Print
+                | Opcode::Equal
                 | Opcode::Greater
                 | Opcode::Less
                 | Opcode::Not
@@ -107,11 +119,13 @@ impl Chunk {
                 *offset += 1;
                 Some(Instruction::Simple(op.unwrap()))
             }
-            Some(Opcode::Constant) => {
+            Some(
+                Opcode::Constant | Opcode::DefineGlobal | Opcode::GetGlobal | Opcode::SetGlobal,
+            ) => {
                 let constant_idx = self.code[*offset + 1];
                 let constant = self.constants[constant_idx as usize];
                 *offset += 2;
-                Some(Instruction::Constant(constant))
+                Some(Instruction::Constant(op.unwrap(), constant))
             }
             otherwise => panic!("Invalid opcode {:?}", otherwise),
         }
@@ -137,9 +151,10 @@ pub struct InstructionDebug {
     pub line: u32,
     pub inner: Instruction,
 }
+
 pub enum Instruction {
     Simple(Opcode),
-    Constant(Value),
+    Constant(Opcode, Value),
 }
 
 impl std::fmt::Debug for Instruction {
@@ -148,7 +163,9 @@ impl std::fmt::Debug for Instruction {
             Instruction::Simple(op) => {
                 write!(f, "{:?}", op)
             }
-            Instruction::Constant(val) => f.debug_tuple("Constant").field(val).finish(),
+            Instruction::Constant(op, val) => {
+                f.debug_tuple("Constant").field(op).field(val).finish()
+            }
         }
     }
 }

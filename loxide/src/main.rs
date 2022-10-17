@@ -57,8 +57,10 @@ fn interpret(src: &str) -> InterpretResult<VM> {
         if !compiler.compile() {
             return Err(InterpretError::CompileError);
         }
-        (compiler.chunk, compiler.obj_list, compiler.strings)
+        (compiler.chunk, compiler.obj_list, compiler.interned_strings)
     };
+
+    println!("CHUNK: {:?}", chunk);
 
     let mut vm = VM::new(chunk, obj_list, strings);
 
@@ -67,29 +69,48 @@ fn interpret(src: &str) -> InterpretResult<VM> {
 
 #[cfg(test)]
 mod test {
-    use std::{
-        alloc::Layout,
-        collections::hash_map::DefaultHasher,
-        hash::{Hash, Hasher},
-        ptr::NonNull,
-    };
 
     use crate::{
         interpret,
         obj::{Obj, ObjString},
-        table::{LoxHash, Table},
+        table::Table,
         value::Value,
     };
 
     #[test]
+    fn dafuq() {
+        let src = r#"var noob = "nice";
+print noob;  "#;
+        let vm = interpret(src).unwrap();
+
+        {
+            // assert_eq!(vm.stack_top, 1);
+            // let top = unsafe { vm.stack[0].assume_init() };
+            // assert_eq!(top.as_str(), Some("hello sir sir"))
+        }
+    }
+
+    #[test]
     fn string() {
-        let src = r#""hello" + " sir" + " sir""#;
+        let src = r#""hello" + " sir" + " sir";"#;
         let vm = interpret(src).unwrap();
 
         {
             assert_eq!(vm.stack_top, 1);
             let top = unsafe { vm.stack[0].assume_init() };
             assert_eq!(top.as_str(), Some("hello sir sir"))
+        }
+    }
+
+    #[test]
+    fn print() {
+        let src = r#"print 1 + 2;"#;
+        let vm = interpret(src).unwrap();
+
+        {
+            assert_eq!(vm.stack_top, 0);
+            // let top = unsafe { vm.stack[0].assume_init() };
+            // assert_eq!(top.as_str(), Some("3"))
         }
     }
 
@@ -111,5 +132,12 @@ mod test {
         }
         Table::free(&mut table);
         Table::free(&mut interned_strings);
+    }
+
+    #[test]
+    fn ohshit() {
+        let bytes = [0, 1, 2, 3];
+
+        println!("NOOB: {:?}", std::mem::size_of::<&[u8]>());
     }
 }

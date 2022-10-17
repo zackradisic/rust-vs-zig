@@ -1,6 +1,7 @@
 use std::{
     fmt::Debug,
     ops::{Add, Div, Mul, Neg, Sub},
+    ptr::NonNull,
 };
 
 use crate::obj::{Obj, ObjKind, ObjString};
@@ -20,6 +21,15 @@ impl Value {
         match *self {
             Value::Obj(obj) => unsafe { (*obj).kind == ObjKind::Str },
             _ => false,
+        }
+    }
+
+    pub fn as_obj_str_ptr(&self) -> Option<NonNull<ObjString>> {
+        match *self {
+            Value::Obj(obj) if unsafe { (*obj).kind == ObjKind::Str } => {
+                Some(unsafe { NonNull::new_unchecked(obj as *mut ObjString) })
+            }
+            _ => None,
         }
     }
 

@@ -7,7 +7,12 @@ use crate::{
     value::Value,
 };
 
-type ParseFn<'s> = fn(&mut Compiler<'s>);
+#[derive(Debug, Clone, Copy)]
+struct ParseRuleCtx {
+    can_assign: bool,
+}
+
+type ParseFn<'s> = fn(&mut Compiler<'s>, ParseRuleCtx);
 
 pub struct ParseRule<'s> {
     prefix: Option<ParseFn<'s>>,
@@ -89,7 +94,7 @@ pub struct Compiler<'src> {
     pub scanner: Scanner<'src>,
     pub chunk: Chunk,
     pub obj_list: ObjList,
-    pub strings: Table,
+    pub interned_strings: Table,
 }
 
 impl<'src> Compiler<'src> {
@@ -137,7 +142,7 @@ impl<'src> Compiler<'src> {
         // lessequal
         parse_rule!(inf = Compiler::binary, Precedence::Comparison),
         // identifier
-        none_prec!(),
+        parse_rule!(pre = Compiler::variable, Precedence::None),
         // string
         parse_rule!(pre = Compiler::string, Precedence::None),
         // number
@@ -188,7 +193,7 @@ impl<'src> Compiler<'src> {
             parser,
             scanner,
             chunk,
-            strings,
+            interned_strings: strings,
         }
     }
 
@@ -198,11 +203,111 @@ impl<'src> Compiler<'src> {
 
     pub fn compile<'a>(&mut self) -> bool {
         self.advance();
-        self.expression();
-        self.consume(TokenKind::Eof, "Expect end of expression.");
+
+        while !self.match_tok(TokenKind::Eof) {
+            self.declaration();
+        }
 
         self.end();
         !self.parser.had_error
+    }
+
+    fn synchronize(&mut self) {
+        self.parser.panic_mode = false;
+
+        while self.parser.cur().kind != TokenKind::Eof {
+            if self.parser.prev().kind == TokenKind::Semicolon {
+                return;
+            }
+
+            use TokenKind::*;
+            match self.parser.cur().kind {
+                Class | Fun | Var | For | If | While | Print | Return => return,
+                _ => (),
+            }
+
+            self.advance()
+        }
+    }
+
+    fn declaration(&mut self) {
+        if self.match_tok(TokenKind::Var) {
+            self.var_declaration();
+        } else {
+            self.statement();
+        }
+
+        if self.parser.panic_mode {
+            self.synchronize();
+        }
+    }
+
+    fn var_declaration(&mut self) {
+        let global = self.parse_variable("Expect variable name.");
+
+        if self.match_tok(TokenKind::Equal) {
+            self.expression();
+        } else {
+            self.emit_byte(Opcode::Nil as u8);
+        }
+
+        self.consume(
+            TokenKind::Semicolon,
+            "Expect ';' after variable declaration.",
+        );
+
+        self.define_variable(global);
+    }
+
+    fn parse_variable(&mut self, err_msg: &str) -> u8 {
+        self.consume(TokenKind::Identifier, err_msg);
+        self.identifier_constant(self.parser.prev())
+    }
+
+    fn define_variable(&mut self, global: u8) {
+        self.emit_bytes(Opcode::DefineGlobal as u8, global)
+    }
+
+    fn identifier_constant(&mut self, name: Token) -> u8 {
+        let constant = Value::Obj(ObjString::copy_string(
+            &mut self.interned_strings,
+            &mut self.obj_list,
+            name.msg,
+        ) as *mut Obj);
+        self.make_constant(constant)
+    }
+
+    fn statement(&mut self) {
+        if self.match_tok(TokenKind::Print) {
+            self.print_statement();
+        } else {
+            self.expression_statement();
+        }
+    }
+
+    fn match_tok(&mut self, kind: TokenKind) -> bool {
+        if self.check(kind) {
+            self.advance();
+            true
+        } else {
+            false
+        }
+    }
+
+    fn print_statement(&mut self) {
+        self.expression();
+        self.consume(TokenKind::Semicolon, "Expect ';' after value.");
+        self.emit_byte(Opcode::Print as u8)
+    }
+
+    fn expression_statement(&mut self) {
+        self.expression();
+        self.consume(TokenKind::Semicolon, "Expect ';' after expression.");
+        self.emit_byte(Opcode::Pop as u8)
+    }
+
+    fn check(&self, kind: TokenKind) -> bool {
+        self.parser.cur().kind == kind
     }
 
     fn end(&mut self) {
@@ -274,6 +379,12 @@ impl<'src> Compiler<'src> {
     }
 
     fn error_at(&mut self, token: Token<'src>, msg: &str) {
+        if self.parser.panic_mode {
+            return;
+        }
+
+        self.parser.panic_mode = true;
+
         eprint!("[line {}] Error", token.line);
 
         if token.kind == TokenKind::Eof {
@@ -297,7 +408,10 @@ impl<'src> Compiler<'src> {
             }
         };
 
-        rule(self);
+        let ctx = ParseRuleCtx {
+            can_assign: precedence as u8 <= Precedence::Assignment as u8,
+        };
+        rule(self, ctx);
 
         while precedence as u8 <= Self::get_rule(self.parser.cur().kind).precedence as u8 {
             self.advance();
@@ -305,7 +419,11 @@ impl<'src> Compiler<'src> {
                 Some(rule) => rule,
                 None => panic!(),
             };
-            infix_rule(self);
+            infix_rule(self, ctx);
+        }
+
+        if ctx.can_assign && self.match_tok(TokenKind::Equal) {
+            self.error("Invalid assignment target.");
         }
     }
 
@@ -313,17 +431,32 @@ impl<'src> Compiler<'src> {
         self.parse_precedence(Precedence::Assignment)
     }
 
-    fn number(&mut self) {
+    fn variable(&mut self, ctx: ParseRuleCtx) {
+        self.named_variable(self.parser.prev(), ctx);
+    }
+
+    fn named_variable(&mut self, name: Token, ctx: ParseRuleCtx) {
+        let arg = self.identifier_constant(name);
+
+        if ctx.can_assign && self.match_tok(TokenKind::Equal) {
+            self.expression();
+            self.emit_bytes(Opcode::SetGlobal as u8, arg);
+        } else {
+            self.emit_bytes(Opcode::GetGlobal as u8, arg);
+        }
+    }
+
+    fn number(&mut self, ctx: ParseRuleCtx) {
         let value: f64 = self.parser.prev().msg.parse().unwrap();
         self.emit_constant(value.into())
     }
 
-    fn string(&mut self) {
+    fn string(&mut self, ctx: ParseRuleCtx) {
         let string = self.parser.prev().msg;
 
         // get rid of the quotations
         let obj_str = ObjString::copy_string(
-            &mut self.strings,
+            &mut self.interned_strings,
             &mut self.obj_list,
             &string[1..string.len() - 1],
         ) as *mut Obj;
@@ -331,7 +464,7 @@ impl<'src> Compiler<'src> {
         self.emit_constant(Value::Obj(obj_str));
     }
 
-    fn literal(&mut self) {
+    fn literal(&mut self, ctx: ParseRuleCtx) {
         match self.parser.prev().kind {
             TokenKind::True => self.emit_byte(Opcode::True as u8),
             TokenKind::False => self.emit_byte(Opcode::False as u8),
@@ -340,12 +473,12 @@ impl<'src> Compiler<'src> {
         }
     }
 
-    fn grouping(&mut self) {
+    fn grouping(&mut self, ctx: ParseRuleCtx) {
         self.expression();
         self.consume(TokenKind::RightParen, "Expect ')' after expression.")
     }
 
-    fn unary(&mut self) {
+    fn unary(&mut self, ctx: ParseRuleCtx) {
         let op_kind = self.parser.prev().kind;
 
         self.parse_precedence(Precedence::Unary);
@@ -357,7 +490,7 @@ impl<'src> Compiler<'src> {
         }
     }
 
-    fn binary(&mut self) {
+    fn binary(&mut self, ctx: ParseRuleCtx) {
         let op_kind = self.parser.prev().kind;
         let rule: &ParseRule<'src> = Self::get_rule(op_kind);
         self.parse_precedence(Precedence::from_u8(rule.precedence as u8 + 1).unwrap());
@@ -373,7 +506,7 @@ impl<'src> Compiler<'src> {
             TokenKind::Minus => self.emit_byte(Opcode::Subtract as u8),
             TokenKind::Star => self.emit_byte(Opcode::Multiply as u8),
             TokenKind::Slash => self.emit_byte(Opcode::Divide as u8),
-            _ => unreachable!(),
+            other => unreachable!("{:?}", other),
         }
     }
 }
@@ -384,6 +517,7 @@ pub struct Parser<'src> {
     prev: MaybeUninit<Token<'src>>,
 
     had_error: bool,
+    panic_mode: bool,
 }
 
 impl<'src> Parser<'src> {
@@ -392,6 +526,7 @@ impl<'src> Parser<'src> {
             cur: MaybeUninit::uninit(),
             prev: MaybeUninit::uninit(),
             had_error: false,
+            panic_mode: false,
         }
     }
 
@@ -507,7 +642,6 @@ impl<'src> Scanner<'src> {
             match c {
                 b' ' | b'\r' | b'\t' => {
                     self.advance();
-                    break;
                 }
                 b'\n' => {
                     self.line += 1;
@@ -593,6 +727,7 @@ impl<'src> Scanner<'src> {
             _ => (),
         }
 
+        let noob = c as char;
         self.error_token("Unexpected character.")
     }
 
@@ -638,7 +773,7 @@ impl<'src> Scanner<'src> {
 
     fn check_keyword(&self, start: usize, len: usize, rest: &str, kind: TokenKind) -> TokenKind {
         if self.current - self.start == start + len
-            && &self.src[(self.start + start)..len] == rest.as_bytes()
+            && &self.src[(self.start + start)..(self.start + start + len)] == rest.as_bytes()
         {
             return kind;
         }
