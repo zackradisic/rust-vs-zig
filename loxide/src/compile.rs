@@ -3,6 +3,7 @@ use std::mem::MaybeUninit;
 use crate::{
     chunk::{Chunk, Opcode},
     obj::{Obj, ObjList, ObjString},
+    table::Table,
     value::Value,
 };
 
@@ -88,6 +89,7 @@ pub struct Compiler<'src> {
     pub scanner: Scanner<'src>,
     pub chunk: Chunk,
     pub obj_list: ObjList,
+    pub strings: Table,
 }
 
 impl<'src> Compiler<'src> {
@@ -177,7 +179,7 @@ impl<'src> Compiler<'src> {
         // eof
         none_prec!(),
     ];
-    pub fn new(src: &'src str, chunk: Chunk) -> Self {
+    pub fn new(src: &'src str, chunk: Chunk, strings: Table) -> Self {
         let scanner = Scanner::new(src);
         let parser = Parser::new();
 
@@ -186,6 +188,7 @@ impl<'src> Compiler<'src> {
             parser,
             scanner,
             chunk,
+            strings,
         }
     }
 
@@ -319,8 +322,11 @@ impl<'src> Compiler<'src> {
         let string = self.parser.prev().msg;
 
         // get rid of the quotations
-        let obj_str =
-            ObjString::copy_string(&mut self.obj_list, &string[1..string.len() - 1]) as *mut Obj;
+        let obj_str = ObjString::copy_string(
+            &mut self.strings,
+            &mut self.obj_list,
+            &string[1..string.len() - 1],
+        ) as *mut Obj;
 
         self.emit_constant(Value::Obj(obj_str));
     }

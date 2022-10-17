@@ -64,20 +64,21 @@ impl Value {
     }
 
     fn objs_eq(a: *mut Obj, b: *mut Obj) -> bool {
-        unsafe {
-            if (*a).kind != (*b).kind {
-                return false;
-            }
+        a == b
+        // unsafe {
+        // if (*a).kind != (*b).kind {
+        //     return false;
+        // }
 
-            match (*a).kind {
-                ObjKind::Str => {
-                    let a_str = (&*(a as *mut ObjString)).as_str();
-                    let b_str = (&*(b as *mut ObjString)).as_str();
+        // match (*a).kind {
+        //     ObjKind::Str => {
+        //         let a_str = (&*(a as *mut ObjString)).as_str();
+        //         let b_str = (&*(b as *mut ObjString)).as_str();
 
-                    a_str == b_str
-                }
-            }
-        }
+        //         a_str == b_str
+        //     }
+        // }
+        // }
     }
 }
 

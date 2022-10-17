@@ -7,6 +7,7 @@ use std::{
 use crate::{
     chunk::{Chunk, InstructionDebug, Opcode},
     obj::{Obj, ObjList, ObjString},
+    table::{LoxHash, Table},
     value::Value,
 };
 
@@ -22,18 +23,21 @@ const STACK_MAX: usize = 256;
 
 pub struct VM {
     chunk: Chunk,
-    obj_list: ObjList,
     // TODO: Make this an instruction pointer?
     instruction_index: usize,
     pub stack: [MaybeUninit<Value>; STACK_MAX],
     pub stack_top: u32,
+
+    obj_list: ObjList,
+    strings: Table,
 }
 
 impl VM {
-    pub fn new(chunk: Chunk, obj_list: ObjList) -> Self {
+    pub fn new(chunk: Chunk, obj_list: ObjList, strings: Table) -> Self {
         Self {
             chunk,
             obj_list,
+            strings,
             instruction_index: 0,
             stack: [MaybeUninit::uninit(); STACK_MAX],
             stack_top: 0,
@@ -91,7 +95,13 @@ impl VM {
         let new_len = a.len + b.len;
 
         let obj_str = if new_len == 0 {
-            ObjString::alloc_str(&mut self.obj_list, NonNull::dangling(), 0) as *mut Obj
+            ObjString::alloc_str(
+                &mut self.strings,
+                &mut self.obj_list,
+                NonNull::dangling(),
+                0,
+                LoxHash::hash_string(""),
+            ) as *mut Obj
         } else {
             let layout = Layout::array::<u8>(new_len as usize).unwrap();
             let chars = unsafe { alloc::alloc(layout) };
@@ -105,11 +115,8 @@ impl VM {
                 );
             }
 
-            ObjString::alloc_str(
-                &mut self.obj_list,
-                unsafe { NonNull::new_unchecked(chars) },
-                new_len,
-            ) as *mut Obj
+            ObjString::take_string(&mut self.strings, &mut self.obj_list, chars, new_len)
+                as *mut Obj
         };
 
         self.push(Value::Obj(obj_str))
@@ -202,10 +209,23 @@ impl VM {
             Obj::free(*obj)
         }
     }
+
+    fn free_interned_strings(&mut self) {
+        Table::free(&mut self.strings)
+        // for val in self.strings.values_mut() {
+        //     let obj_str = match val {
+        //         Value::Obj(ptr) => unsafe { *ptr },
+        //         other => panic!("Invalid obj string value {:?}", other),
+        //     };
+
+        //     Obj::free(obj_str)
+        // }
+    }
 }
 
 impl Drop for VM {
     fn drop(&mut self) {
         self.free_objects();
+        self.free_interned_strings();
     }
 }
