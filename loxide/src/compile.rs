@@ -89,12 +89,21 @@ macro_rules! parse_rule {
     };
 }
 
+pub struct Local<'src> {
+    name: Token<'src>,
+    depth: Option<u32>,
+}
+
 pub struct Compiler<'src> {
     pub parser: Parser<'src>,
     pub scanner: Scanner<'src>,
     pub chunk: Chunk,
     pub obj_list: ObjList,
     pub interned_strings: Table,
+
+    locals: [MaybeUninit<Local<'src>>; u8::MAX as usize],
+    local_count: usize,
+    scope_depth: usize,
 }
 
 impl<'src> Compiler<'src> {
@@ -184,6 +193,8 @@ impl<'src> Compiler<'src> {
         // eof
         none_prec!(),
     ];
+    const UNINTIALIZED_LOCAL: MaybeUninit<Local<'src>> = MaybeUninit::uninit();
+
     pub fn new(src: &'src str, chunk: Chunk, strings: Table) -> Self {
         let scanner = Scanner::new(src);
         let parser = Parser::new();
@@ -194,6 +205,9 @@ impl<'src> Compiler<'src> {
             scanner,
             chunk,
             interned_strings: strings,
+            locals: [Self::UNINTIALIZED_LOCAL; u8::MAX as usize],
+            local_count: 0,
+            scope_depth: 0,
         }
     }
 
@@ -261,11 +275,72 @@ impl<'src> Compiler<'src> {
 
     fn parse_variable(&mut self, err_msg: &str) -> u8 {
         self.consume(TokenKind::Identifier, err_msg);
-        self.identifier_constant(self.parser.prev())
+
+        self.declare_variable();
+        if self.scope_depth > 0 {
+            return 0;
+        }
+
+        let name = self.parser.prev();
+
+        let mut had_error = false;
+        for local in self.locals.iter().take(self.local_count).rev() {
+            let local = unsafe { local.assume_init_ref() };
+            if local.depth.is_some()
+                && unsafe { local.depth.unwrap_unchecked() as usize } < self.scope_depth
+            {
+                break;
+            }
+
+            if name == local.name {
+                had_error = true;
+            }
+        }
+
+        if had_error {
+            self.error("Already a variable with this name in this scope.");
+        }
+
+        self.identifier_constant(name)
+    }
+
+    fn declare_variable(&mut self) {
+        if self.scope_depth == 0 {
+            return;
+        }
+
+        self.add_local(&self.parser.prev());
+    }
+
+    fn add_local(&mut self, tok: &Token<'src>) {
+        if self.local_count == u8::MAX as usize {
+            self.error("Too many local variables in function.");
+            return;
+        }
+
+        let local = self.locals[self.local_count].as_mut_ptr();
+        self.local_count += 1;
+
+        unsafe {
+            (*local).name = *tok;
+            (*local).depth = None;
+        }
     }
 
     fn define_variable(&mut self, global: u8) {
+        if self.scope_depth > 0 {
+            self.mark_initialized();
+            return;
+        }
+
         self.emit_bytes(Opcode::DefineGlobal as u8, global)
+    }
+
+    fn mark_initialized(&mut self) {
+        let scope_depth = self.scope_depth;
+        unsafe {
+            self.locals[self.local_count - 1].assume_init_mut().depth = Some(scope_depth as u32);
+        }
     }
 
     fn identifier_constant(&mut self, name: Token) -> u8 {
@@ -280,8 +355,40 @@ impl<'src> Compiler<'src> {
     fn statement(&mut self) {
         if self.match_tok(TokenKind::Print) {
             self.print_statement();
+        } else if self.match_tok(TokenKind::LeftBrace) {
+            self.begin_scope();
+            self.block();
+            self.end_scope();
         } else {
             self.expression_statement();
+        }
+    }
+
+    fn block(&mut self) {
+        while !self.check(TokenKind::RightBrace) && !self.check(TokenKind::Eof) {
+            self.declaration()
+        }
+
+        self.consume(TokenKind::RightBrace, "Expect '}' after block.")
+    }
+
+    fn begin_scope(&mut self) {
+        self.scope_depth += 1;
+    }
+    fn end_scope(&mut self) {
+        self.scope_depth -= 1;
+
+        while self.local_count > 0
+            && unsafe {
+                self.locals[self.local_count - 1]
+                    .assume_init_ref()
+                    .depth
+                    .map(|val| val as isize)
+                    .unwrap_or(-1)
+            } > self.scope_depth as isize
+        {
+            self.emit_byte(Opcode::Pop as u8);
+            self.local_count -= 1;
         }
     }
 
@@ -436,14 +543,37 @@ impl<'src> Compiler<'src> {
     }
 
     fn named_variable(&mut self, name: Token, ctx: ParseRuleCtx) {
-        let arg = self.identifier_constant(name);
+        let (mut get_op, mut set_op) = (Opcode::GetGlobal as u8, Opcode::SetGlobal as u8);
+
+        let arg = match self.resolve_local(name) {
+            Some(arg) => {
+                get_op = Opcode::GetLocal as u8;
+                set_op = Opcode::SetLocal as u8;
+                arg
+            }
+            None => self.identifier_constant(name),
+        };
 
         if ctx.can_assign && self.match_tok(TokenKind::Equal) {
             self.expression();
-            self.emit_bytes(Opcode::SetGlobal as u8, arg);
+            self.emit_bytes(set_op, arg);
         } else {
-            self.emit_bytes(Opcode::GetGlobal as u8, arg);
+            self.emit_bytes(get_op, arg);
         }
+    }
+
+    fn resolve_local(&mut self, name: Token) -> Option<u8> {
+        for (i, local) in self.locals.iter().enumerate().take(self.local_count).rev() {
+            let local = unsafe { local.assume_init_ref() };
+            if local.name == name {
+                if local.depth.is_none() {
+                    self.error("Can't read local variable in its own initializer.");
+                }
+                return Some(i as u8);
+            }
+        }
+
+        return None;
     }
 
     fn number(&mut self, ctx: ParseRuleCtx) {
@@ -593,7 +723,7 @@ pub enum TokenKind {
     Eof,
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Token<'src> {
     kind: TokenKind,
     line: u32,

@@ -23,6 +23,8 @@ pub enum Opcode {
     DefineGlobal,
     GetGlobal,
     SetGlobal,
+    GetLocal,
+    SetLocal,
 }
 
 impl Opcode {
@@ -48,6 +50,8 @@ impl Opcode {
             16 => Some(DefineGlobal),
             17 => Some(GetGlobal),
             18 => Some(SetGlobal),
+            19 => Some(GetLocal),
+            20 => Some(SetLocal),
             _ => None,
         }
     }
@@ -127,6 +131,11 @@ impl Chunk {
                 *offset += 2;
                 Some(Instruction::Constant(op.unwrap(), constant))
             }
+            Some(Opcode::GetLocal | Opcode::SetLocal) => {
+                let slot = self.code[*offset + 1];
+                *offset += 2;
+                Some(Instruction::Byte(op.unwrap(), slot))
+            }
             otherwise => panic!("Invalid opcode {:?}", otherwise),
         }
     }
@@ -155,6 +164,7 @@ pub struct InstructionDebug {
 pub enum Instruction {
     Simple(Opcode),
     Constant(Opcode, Value),
+    Byte(Opcode, u8),
 }
 
 impl std::fmt::Debug for Instruction {
@@ -166,6 +176,7 @@ impl std::fmt::Debug for Instruction {
             Instruction::Constant(op, val) => {
                 f.debug_tuple("Constant").field(op).field(val).finish()
             }
+            Instruction::Byte(op, val) => f.debug_tuple("Byte").field(op).field(val).finish(),
         }
     }
 }

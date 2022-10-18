@@ -29,9 +29,9 @@ pub struct VM {
     pub stack: [MaybeUninit<Value>; STACK_MAX],
     pub stack_top: u32,
 
-    obj_list: ObjList,
-    globals: Table,
-    strings: Table,
+    pub obj_list: ObjList,
+    pub globals: Table,
+    pub strings: Table,
 }
 
 impl VM {
@@ -45,6 +45,10 @@ impl VM {
             stack: [MaybeUninit::uninit(); STACK_MAX],
             stack_top: 0,
         }
+    }
+
+    pub fn get_string(&mut self, string: &str) -> *mut ObjString {
+        ObjString::copy_string(&mut self.strings, &mut self.obj_list, string)
     }
 
     fn push(&mut self, val: Value) {
@@ -149,6 +153,15 @@ impl VM {
             let byte = self.read_byte();
 
             match Opcode::from_u8(byte) {
+                Some(Opcode::GetLocal) => {
+                    let slot = self.read_byte();
+                    let val = unsafe { self.stack[slot as usize].assume_init() };
+                    self.push(val);
+                }
+                Some(Opcode::SetLocal) => {
+                    let slot = self.read_byte();
+                    self.stack[slot as usize] = MaybeUninit::new(self.peek(0));
+                }
                 Some(Opcode::SetGlobal) => {
                     let name = self
                         .read_constant()

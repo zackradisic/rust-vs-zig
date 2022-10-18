@@ -71,6 +71,7 @@ fn interpret(src: &str) -> InterpretResult<VM> {
 mod test {
 
     use crate::{
+        compile::{Local, Token},
         interpret,
         obj::{Obj, ObjString},
         table::Table,
@@ -78,28 +79,26 @@ mod test {
     };
 
     #[test]
-    fn dafuq() {
-        let src = r#"var noob = "nice";
-print noob;  "#;
-        let vm = interpret(src).unwrap();
+    fn locals() {
+        let src = r#"
+        var global = 420;
+        { var x = "HELLO"; x = "NICE"; global = x; }
+"#;
+        let mut vm = interpret(src).unwrap();
 
-        {
-            // assert_eq!(vm.stack_top, 1);
-            // let top = unsafe { vm.stack[0].assume_init() };
-            // assert_eq!(top.as_str(), Some("hello sir sir"))
-        }
+        let noob = vm.get_string("global");
+        let top = vm.globals.get(noob);
+        assert_eq!(top.unwrap().as_str(), Some("NICE"));
     }
 
     #[test]
     fn string() {
-        let src = r#""hello" + " sir" + " sir";"#;
-        let vm = interpret(src).unwrap();
+        let src = r#"var noob = "hello" + " sir" + " sir";"#;
+        let mut vm = interpret(src).unwrap();
 
-        {
-            assert_eq!(vm.stack_top, 1);
-            let top = unsafe { vm.stack[0].assume_init() };
-            assert_eq!(top.as_str(), Some("hello sir sir"))
-        }
+        let noob = vm.get_string("noob");
+        let top = vm.globals.get(noob);
+        assert_eq!(top.unwrap().as_str(), Some("hello sir sir"));
     }
 
     #[test]
@@ -136,8 +135,14 @@ print noob;  "#;
 
     #[test]
     fn ohshit() {
-        let bytes = [0, 1, 2, 3];
+        // let bytes = [0, 1, 2, 3];
 
-        println!("NOOB: {:?}", std::mem::size_of::<&[u8]>());
+        println!("NOOB: {:?}", std::mem::size_of::<Token>());
+
+        let values = [0, 1, 2, 3, 4, 5];
+        println!(
+            "NICE: {:?}",
+            values.iter().take(3).rev().collect::<Vec<_>>()
+        );
     }
 }
