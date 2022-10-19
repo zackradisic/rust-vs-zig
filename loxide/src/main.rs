@@ -79,6 +79,62 @@ mod test {
     };
 
     #[test]
+    fn if_stmt() {
+        let src = r#"
+        var noob = 420;
+        if (420 > 69) { noob = "NICE"; } else { noob = "NOT NICE"; }
+"#;
+        let mut vm = interpret(src).unwrap();
+
+        let noob = vm.get_string("noob");
+        let top = vm.globals.get(noob);
+        assert_eq!(top.unwrap().as_str(), Some("NICE"));
+    }
+
+    #[test]
+    fn if_else_stmt() {
+        let src = r#"
+        var noob = 420;
+        if (69 > 420) { noob = "wtf"; } else { noob = "NICE"; }
+"#;
+        let mut vm = interpret(src).unwrap();
+
+        let noob = vm.get_string("noob");
+        let top = vm.globals.get(noob);
+        assert_eq!(top.unwrap().as_str(), Some("NICE"));
+    }
+
+    #[test]
+    fn while_loop() {
+        let src = r#"
+        var noob = 0;
+        while (noob < 10) {
+          noob = noob + 1;
+        }
+"#;
+        let mut vm = interpret(src).unwrap();
+
+        let noob = vm.get_string("noob");
+        let top = vm.globals.get(noob);
+        assert_eq!(top, Some(Value::Number(10.0)));
+    }
+
+    #[test]
+    fn for_loop() {
+        let src = r#"
+        var noob = 420;
+        for (var x = 0; x < 10; x = x + 1) {
+          noob = x;
+        }
+"#;
+        let mut vm = interpret(src).unwrap();
+
+        // let noob = vm.get_string("global");
+        // let top = vm.globals.get(noob);
+        // assert_eq!(top.unwrap().as_str(), Some("NICE"));
+    }
+
+    #[test]
     fn locals() {
         let src = r#"
         var global = 420;
@@ -144,5 +200,37 @@ mod test {
             "NICE: {:?}",
             values.iter().take(3).rev().collect::<Vec<_>>()
         );
+
+        // 0
+        // 1
+        // 2 ---
+        // 3 ---
+        // 4
+        // 5
+        //
+        // 6
+        // -2 to adjust for the 2 bytes for the jump offset
+        let mut chunk = [0, 1, 2, 3, 4, 5];
+        let offset = 2;
+        let jump = chunk.len() as u32 - offset - 2;
+
+        chunk[offset as usize] = (jump >> 8) as u8 & 0xff;
+        chunk[offset as usize + 1] = jump as u8 & 0xff;
+
+        let val = ((chunk[offset as usize] as u16) << 8) | (chunk[offset as usize + 1] as u16);
+
+        println!(
+            "{} NOOB: {:?} JUMP: {} {}",
+            jump,
+            chunk,
+            val,
+            0u16 << 8 | 2u16
+        );
     }
+}
+
+fn f(a: i32, b: i32) -> i32 {}
+
+fn noob() {
+    let noob = f(f(1, 2), f())
 }

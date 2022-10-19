@@ -25,6 +25,9 @@ pub enum Opcode {
     SetGlobal,
     GetLocal,
     SetLocal,
+    JumpIfFalse,
+    Jump,
+    Loop,
 }
 
 impl Opcode {
@@ -52,6 +55,9 @@ impl Opcode {
             18 => Some(SetGlobal),
             19 => Some(GetLocal),
             20 => Some(SetLocal),
+            21 => Some(JumpIfFalse),
+            22 => Some(Jump),
+            23 => Some(Loop),
             _ => None,
         }
     }
@@ -136,6 +142,13 @@ impl Chunk {
                 *offset += 2;
                 Some(Instruction::Byte(op.unwrap(), slot))
             }
+            Some(Opcode::Jump | Opcode::JumpIfFalse | Opcode::Loop) => {
+                let byte1 = self.code[*offset + 1];
+                let byte2 = self.code[*offset + 2];
+                *offset += 3;
+                let val = ((byte1 as u16) << 8) | (byte2 as u16);
+                Some(Instruction::Jump(op.unwrap(), val))
+            }
             otherwise => panic!("Invalid opcode {:?}", otherwise),
         }
     }
@@ -165,6 +178,7 @@ pub enum Instruction {
     Simple(Opcode),
     Constant(Opcode, Value),
     Byte(Opcode, u8),
+    Jump(Opcode, u16),
 }
 
 impl std::fmt::Debug for Instruction {
@@ -177,6 +191,7 @@ impl std::fmt::Debug for Instruction {
                 f.debug_tuple("Constant").field(op).field(val).finish()
             }
             Instruction::Byte(op, val) => f.debug_tuple("Byte").field(op).field(val).finish(),
+            Instruction::Jump(op, offset) => f.debug_tuple("Jump").field(op).field(offset).finish(),
         }
     }
 }

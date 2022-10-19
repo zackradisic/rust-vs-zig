@@ -7,7 +7,7 @@ use std::{
 
 use crate::{
     chunk::{Chunk, InstructionDebug, Opcode},
-    obj::{Obj, ObjKind, ObjList, ObjString},
+    obj::{Obj, ObjList, ObjString},
     table::{LoxHash, Table},
     value::Value,
 };
@@ -153,6 +153,20 @@ impl VM {
             let byte = self.read_byte();
 
             match Opcode::from_u8(byte) {
+                Some(Opcode::Loop) => {
+                    let offset = self.read_u16();
+                    self.instruction_index -= offset as usize;
+                }
+                Some(Opcode::Jump) => {
+                    let offset = self.read_u16();
+                    self.instruction_index += offset as usize;
+                }
+                Some(Opcode::JumpIfFalse) => {
+                    let offset = self.read_u16();
+                    if self.peek(0).is_falsey() {
+                        self.instruction_index += offset as usize;
+                    }
+                }
                 Some(Opcode::GetLocal) => {
                     let slot = self.read_byte();
                     let val = unsafe { self.stack[slot as usize].assume_init() };
@@ -268,6 +282,15 @@ impl VM {
         let ret = self.chunk[self.instruction_index];
         self.instruction_index += 1;
         ret
+    }
+
+    #[inline]
+    fn read_u16(&mut self) -> u16 {
+        let byte1 = self.chunk[self.instruction_index];
+        let byte2 = self.chunk[self.instruction_index + 1];
+        self.instruction_index += 2;
+
+        ((byte1 as u16) << 8) | (byte2 as u16)
     }
 
     #[inline]
