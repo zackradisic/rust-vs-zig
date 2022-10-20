@@ -13,7 +13,7 @@ use obj::ObjList;
 use table::Table;
 use vm::{InterpretError, InterpretResult};
 
-use crate::{chunk::Chunk, compile::FunctionKind, vm::VM};
+use crate::{compile::FunctionKind, vm::VM};
 
 fn main() {
     // run_file("./test.lox")
@@ -79,8 +79,8 @@ mod test {
         compile::Token,
         interpret,
         native_fn::NativeFn,
-        obj::{Obj, ObjFunction, ObjString},
-        table::{ObjHash, Table},
+        obj::{Obj, ObjString},
+        table::Table,
         value::Value,
     };
 
@@ -122,7 +122,7 @@ mod test {
         }
 
         print bigNoob;"#;
-        let vm = interpret(src).unwrap();
+        let _vm = interpret(src).unwrap();
     }
 
     #[test]
@@ -207,7 +207,7 @@ mod test {
     #[test]
     fn print() {
         let src = r#"print 1 + 2;"#;
-        let vm = interpret(src).unwrap();
+        let _vm = interpret(src).unwrap();
     }
 
     #[test]

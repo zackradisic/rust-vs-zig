@@ -2,7 +2,7 @@ use std::{
     alloc::{self, Layout},
     collections::LinkedList,
     mem::{self},
-    ptr::{self, addr_of_mut, null_mut, NonNull},
+    ptr::{self, addr_of_mut, NonNull},
     slice,
 };
 

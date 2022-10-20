@@ -1,11 +1,11 @@
 use std::{
     mem::MaybeUninit,
-    ptr::{addr_of, addr_of_mut, null_mut, NonNull},
+    ptr::{addr_of_mut, null_mut, NonNull},
 };
 
 use crate::{
     chunk::{Chunk, Opcode},
-    obj::{Obj, ObjFunction, ObjList, ObjString},
+    obj::{ObjFunction, ObjList, ObjString},
     table::Table,
     value::Value,
 };
@@ -462,7 +462,7 @@ impl<'a, 'src: 'a> Compiler<'a, 'src> {
 
     fn identifier_constant(&mut self, name: Token) -> u8 {
         let constant = Value::Obj(
-            ObjString::copy_string(&mut self.interned_strings, &mut self.obj_list, name.msg).cast(),
+            ObjString::copy_string(self.interned_strings, self.obj_list, name.msg).cast(),
         );
         self.make_constant(constant)
     }
@@ -885,8 +885,8 @@ impl<'a, 'src: 'a> Compiler<'a, 'src> {
 
         // get rid of the quotations
         let obj_str = ObjString::copy_string(
-            &mut self.interned_strings,
-            &mut self.obj_list,
+            self.interned_strings,
+            self.obj_list,
             &string[1..string.len() - 1],
         );
 

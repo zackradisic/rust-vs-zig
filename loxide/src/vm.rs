@@ -3,12 +3,11 @@ use std::{
     borrow::Cow,
     mem::MaybeUninit,
     ptr::{self, NonNull},
-    slice,
 };
 
 use crate::{
-    chunk::{Chunk, InstructionDebug, Opcode},
-    native_fn::{NativeFn, NativeFnKind},
+    chunk::{InstructionDebug, Opcode},
+    native_fn::NativeFnKind,
     obj::{Obj, ObjFunction, ObjKind, ObjList, ObjNative, ObjString},
     table::{ObjHash, Table},
     value::Value,

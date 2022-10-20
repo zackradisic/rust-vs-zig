@@ -1,9 +1,6 @@
 use std::ptr::{null_mut, NonNull};
 
-use crate::{
-    obj::{Obj, ObjKind, ObjString},
-    value::Value,
-};
+use crate::{obj::ObjString, value::Value};
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct ObjHash(pub u32);
@@ -12,7 +9,7 @@ impl ObjHash {
     pub const EMPTY_STR_HASH: Self = ObjHash(2166136261u32);
 
     pub fn hash_string(string: &str) -> ObjHash {
-        if string.len() == 0 {
+        if string.is_empty() {
             return Self::EMPTY_STR_HASH;
         }
 
@@ -47,13 +44,7 @@ impl<'a> Iterator for TableIter<'a> {
                 return None;
             }
 
-            let entry = unsafe {
-                self.table
-                    .entries
-                    .offset(self.index as isize)
-                    .as_ref()
-                    .unwrap()
-            };
+            let entry = unsafe { self.table.entries.add(self.index).as_ref().unwrap() };
 
             self.index += 1;
 
@@ -287,10 +278,8 @@ impl Table {
                         };
                     }
                     tombstone = entry;
-                } else {
-                    if (*entry).key == key.as_ptr() {
-                        return entry;
-                    }
+                } else if (*entry).key == key.as_ptr() {
+                    return entry;
                 }
 
                 index = (index + 1) % cap;
