@@ -4,31 +4,86 @@ use std::{
     ptr::NonNull,
 };
 
-use crate::obj::{Obj, ObjKind, ObjString};
+use crate::obj::{Obj, ObjFunction, ObjKind, ObjNative, ObjPtrWrapper, ObjString};
 
 pub type ValueArray = Vec<Value>;
 
+// PERF: Nan-Boxing?
 #[derive(Copy, Clone)]
 pub enum Value {
     Bool(bool),
     Number(f64),
     Nil,
-    Obj(*mut Obj),
+    Obj(NonNull<Obj>),
 }
 
 impl Value {
     pub fn is_str(&self) -> bool {
         match *self {
-            Value::Obj(obj) => unsafe { (*obj).kind == ObjKind::Str },
+            Value::Obj(obj) => unsafe { (*obj.as_ptr()).kind == ObjKind::Str },
             _ => false,
+        }
+    }
+
+    pub fn is_fn(&self) -> bool {
+        match self {
+            Value::Obj(obj) => unsafe { (*obj.as_ptr()).kind == ObjKind::Fn },
+            _ => false,
+        }
+    }
+
+    pub fn is_native(&self) -> bool {
+        match self {
+            Value::Obj(obj) => unsafe { (*obj.as_ptr()).kind == ObjKind::Native },
+            _ => false,
+        }
+    }
+
+    pub fn as_fn_ptr(&self) -> Option<NonNull<ObjFunction>> {
+        match self {
+            Value::Obj(obj) if unsafe { (*obj.as_ptr()).kind == ObjKind::Fn } => Some(obj.cast()),
+            _ => None,
+        }
+    }
+
+    pub fn as_obj_fn(&self) -> Option<&ObjFunction> {
+        match *self {
+            Value::Obj(obj) => unsafe {
+                let kind = (*obj.as_ptr()).kind;
+                match kind {
+                    ObjKind::Fn => Some(obj.cast().as_ref()),
+                    _ => None,
+                }
+            },
+            _ => None,
+        }
+    }
+
+    pub fn as_native_ptr(&self) -> Option<NonNull<ObjNative>> {
+        match self {
+            Value::Obj(obj) if unsafe { (*obj.as_ptr()).kind == ObjKind::Native } => {
+                Some(obj.cast())
+            }
+            _ => None,
+        }
+    }
+
+    pub fn as_obj_native(&self) -> Option<&ObjNative> {
+        match *self {
+            Value::Obj(obj) => unsafe {
+                let kind = (*obj.as_ptr()).kind;
+                match kind {
+                    ObjKind::Native => Some(obj.cast().as_ref()),
+                    _ => None,
+                }
+            },
+            _ => None,
         }
     }
 
     pub fn as_obj_str_ptr(&self) -> Option<NonNull<ObjString>> {
         match *self {
-            Value::Obj(obj) if unsafe { (*obj).kind == ObjKind::Str } => {
-                Some(unsafe { NonNull::new_unchecked(obj as *mut ObjString) })
-            }
+            Value::Obj(obj) if unsafe { obj.as_ref().kind == ObjKind::Str } => Some(obj.cast()),
             _ => None,
         }
     }
@@ -36,9 +91,10 @@ impl Value {
     pub fn as_obj_str(&self) -> Option<&ObjString> {
         match *self {
             Value::Obj(obj) => unsafe {
-                let kind = (*obj).kind;
+                let kind = obj.as_ref().kind;
                 match kind {
-                    ObjKind::Str => Some(&*(obj as *mut ObjString)),
+                    ObjKind::Str => Some(obj.cast().as_ref()),
+                    _ => None,
                 }
             },
             _ => None,
@@ -48,13 +104,19 @@ impl Value {
     pub fn as_str(&self) -> Option<&str> {
         match *self {
             Value::Obj(obj) => unsafe {
-                let kind = (*obj).kind;
+                let kind = obj.as_ref().kind;
                 match kind {
-                    ObjKind::Str => Some((&*(obj as *mut ObjString)).as_str()),
+                    ObjKind::Str => Some(obj.cast::<ObjString>().as_ref().as_str()),
+                    _ => None,
                 }
             },
             _ => None,
         }
+    }
+
+    #[inline]
+    pub fn is_nil(self) -> bool {
+        matches!(self, Value::Nil)
     }
 
     pub fn is_falsey(self) -> bool {
@@ -99,13 +161,7 @@ impl Debug for Value {
             Self::Number(arg0) => f.debug_tuple("Number").field(arg0).finish(),
             Self::Nil => write!(f, "Nil"),
             Self::Obj(arg0) => {
-                let kind = unsafe { (**arg0).kind };
-                match kind {
-                    ObjKind::Str => {
-                        let obj_str = unsafe { &*((*arg0) as *mut ObjString) };
-                        write!(f, "{:?}", obj_str.as_str())
-                    }
-                }
+                write!(f, "{:?}", ObjPtrWrapper(arg0.as_ptr()))
             }
         }
     }
@@ -125,7 +181,7 @@ impl PartialEq for Value {
         match (*self, *other) {
             (Self::Bool(l0), Self::Bool(r0)) => l0 == r0,
             (Self::Number(l0), Self::Number(r0)) => l0 == r0,
-            (Self::Obj(a), Self::Obj(b)) => Self::objs_eq(a, b),
+            (Self::Obj(a), Self::Obj(b)) => Self::objs_eq(a.as_ptr(), b.as_ptr()),
             _ => core::mem::discriminant(self) == core::mem::discriminant(other),
         }
     }

@@ -1,19 +1,21 @@
-use std::{
-    alloc::{self, Layout},
-    hash::Hash,
-    ops::{Deref, DerefMut},
-    ptr::{null_mut, NonNull},
+use std::ptr::{null_mut, NonNull};
+
+use crate::{
+    obj::{Obj, ObjKind, ObjString},
+    value::Value,
 };
 
-use fnv::FnvHashMap;
-
-use crate::{obj::ObjString, value::Value};
-
 #[derive(Copy, Clone, Debug, PartialEq)]
-pub struct LoxHash(pub u32);
+pub struct ObjHash(pub u32);
 
-impl LoxHash {
-    pub fn hash_string(string: &str) -> LoxHash {
+impl ObjHash {
+    pub const EMPTY_STR_HASH: Self = ObjHash(2166136261u32);
+
+    pub fn hash_string(string: &str) -> ObjHash {
+        if string.len() == 0 {
+            return Self::EMPTY_STR_HASH;
+        }
+
         let string_bytes = string.as_bytes();
         let mut hash = 2166136261u32;
 
@@ -23,20 +25,74 @@ impl LoxHash {
             // hash *= ;
         }
 
-        LoxHash(hash)
+        ObjHash(hash)
     }
 }
 
+pub struct TableIter<'a> {
+    table: &'a Table,
+    index: usize,
+}
+
+impl<'a> Iterator for TableIter<'a> {
+    type Item = &'a Entry;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.table.len == 0 {
+            return None;
+        }
+
+        loop {
+            if self.index >= self.table.cap as usize {
+                return None;
+            }
+
+            let entry = unsafe {
+                self.table
+                    .entries
+                    .offset(self.index as isize)
+                    .as_ref()
+                    .unwrap()
+            };
+
+            self.index += 1;
+
+            if !entry.is_uninitialized() {
+                return Some(entry);
+            }
+        }
+    }
+}
+
+#[derive(Clone)]
 pub struct Table {
     pub len: u32,
     pub cap: u32,
     pub entries: *mut Entry,
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone)]
 pub struct Entry {
     pub key: *mut ObjString,
     pub value: Value,
+}
+
+impl std::fmt::Debug for Entry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        unsafe {
+            f.debug_struct("Entry")
+                .field(
+                    "key",
+                    &match self.key.as_ref() {
+                        Some(obj_str) => obj_str.as_str(),
+                        None => "null_key",
+                    },
+                )
+                .field("(key_ptr)", &self.key)
+                .field("value", &self.value)
+                .finish()
+        }
+    }
 }
 
 impl Table {
@@ -50,11 +106,18 @@ impl Table {
         }
     }
 
+    pub fn iter(&self) -> TableIter {
+        TableIter {
+            table: self,
+            index: 0,
+        }
+    }
+
     fn entries_slice(&self) -> Option<&[Entry]> {
         // Safety:
         // `self.entries` layout is an array of `self.cap` length so its okay to create a slice of it
         if self.entries.is_null() {
-            return None;
+            None
         } else {
             Some(unsafe { std::slice::from_raw_parts(self.entries, self.cap as usize) })
         }
@@ -64,8 +127,11 @@ impl Table {
         match self.entries_slice() {
             Some(entries) => {
                 for entry in entries.iter() {
-                    if !entry.key.is_null() {
-                        to.set(entry.key, entry.value);
+                    match NonNull::new(entry.key) {
+                        Some(key) => {
+                            to.set(key, entry.value);
+                        }
+                        None => (),
                     }
                 }
             }
@@ -74,13 +140,7 @@ impl Table {
     }
 
     pub fn adjust_capacity(&mut self, new_cap: u32) {
-        let mut entries = vec![
-            Entry {
-                key: null_mut(),
-                value: Value::Nil
-            };
-            new_cap as usize
-        ];
+        let mut entries = vec![Entry::uninitialized(); new_cap as usize];
 
         if !self.entries.is_null() {
             let mut new_len = 0;
@@ -89,17 +149,17 @@ impl Table {
             // Safety:
             // We don't need to call drop on each Entry so Vec deallocating is just fine
             let old_entries =
-                unsafe { Vec::from_raw_parts(self.entries, self.len as usize, self.cap as usize) };
+                unsafe { Vec::from_raw_parts(self.entries, self.cap as usize, self.cap as usize) };
 
             for entry in old_entries.iter() {
                 unsafe {
-                    if entry.key.is_null() {
-                        continue;
-                    }
+                    let key = match NonNull::new(entry.key) {
+                        Some(key) => key,
+                        None => continue,
+                    };
 
-                    let dest =
-                        Self::find_entry_from_ptr(entries.as_mut_ptr(), new_cap, (*entry).key);
-                    (*dest).key = entry.key;
+                    let dest = Self::find_entry_from_ptr(entries.as_mut_ptr(), new_cap, key);
+                    (*dest).key = key.as_ptr();
                     (*dest).value = entry.value;
                 }
                 new_len += 1;
@@ -114,7 +174,7 @@ impl Table {
         let _ = entries.leak();
     }
 
-    pub fn set(&mut self, key: *mut ObjString, val: Value) -> bool {
+    pub fn set(&mut self, key: NonNull<ObjString>, val: Value) -> bool {
         if self.len as f32 + 1.0 > self.cap as f32 * Self::TABLE_MAX_LOAD {
             let new_cap = if self.cap < 8 { 8 } else { self.cap * 2 };
             self.adjust_capacity(new_cap);
@@ -122,10 +182,10 @@ impl Table {
 
         let entry = self.find_entry_mut(key);
 
-        let is_new_key = entry.key.is_null();
-        let should_increment_len = is_new_key && matches!(entry.value, Value::Nil);
+        let is_new_key = entry.is_uninitialized();
+        let should_increment_len = entry.is_uninitialized();
 
-        entry.key = key;
+        entry.key = key.as_ptr();
         entry.value = val;
 
         if should_increment_len {
@@ -135,7 +195,7 @@ impl Table {
         is_new_key
     }
 
-    pub fn delete(&mut self, key: *mut ObjString) -> bool {
+    pub fn delete(&mut self, key: NonNull<ObjString>) -> bool {
         if self.len == 0 {
             return false;
         }
@@ -151,7 +211,7 @@ impl Table {
         true
     }
 
-    pub fn get(&self, key: *mut ObjString) -> Option<Value> {
+    pub fn get(&self, key: NonNull<ObjString>) -> Option<Value> {
         if self.len == 0 {
             return None;
         }
@@ -164,7 +224,7 @@ impl Table {
         Some(entry.value)
     }
 
-    pub fn find_entry(&self, key: *mut ObjString) -> &Entry {
+    pub fn find_entry(&self, key: NonNull<ObjString>) -> &Entry {
         unsafe {
             Self::find_entry_from_ptr(self.entries, self.cap, key)
                 .as_ref()
@@ -172,7 +232,7 @@ impl Table {
         }
     }
 
-    pub fn find_entry_mut(&mut self, key: *mut ObjString) -> &mut Entry {
+    pub fn find_entry_mut(&mut self, key: NonNull<ObjString>) -> &mut Entry {
         unsafe {
             Self::find_entry_from_ptr(self.entries, self.cap, key)
                 .as_mut()
@@ -180,7 +240,7 @@ impl Table {
         }
     }
 
-    pub fn find_string(&self, string: &str, hash: LoxHash) -> Option<NonNull<ObjString>> {
+    pub fn find_string(&self, string: &str, hash: ObjHash) -> Option<NonNull<ObjString>> {
         if self.len == 0 {
             return None;
         }
@@ -211,8 +271,8 @@ impl Table {
         }
     }
 
-    fn find_entry_from_ptr(entries: *mut Entry, cap: u32, key: *mut ObjString) -> *mut Entry {
-        let mut index = unsafe { (*key).hash.0 } % cap;
+    fn find_entry_from_ptr(entries: *mut Entry, cap: u32, key: NonNull<ObjString>) -> *mut Entry {
+        let mut index = unsafe { (*key.as_ptr()).hash.0 } % cap;
         let mut tombstone: *mut Entry = null_mut();
 
         loop {
@@ -225,11 +285,12 @@ impl Table {
                         } else {
                             entry
                         };
-                    } else {
-                        tombstone = entry;
                     }
-                } else if (*entry).key == key {
-                    return entry;
+                    tombstone = entry;
+                } else {
+                    if (*entry).key == key.as_ptr() {
+                        return entry;
+                    }
                 }
 
                 index = (index + 1) % cap;
@@ -242,10 +303,25 @@ impl Table {
             return;
         }
 
-        let _v =
+        // free the buckets
+        let _entries =
             unsafe { Vec::from_raw_parts(table.entries, table.len as usize, table.cap as usize) };
+
         table.len = 0;
         table.cap = 0;
         table.entries = null_mut();
+    }
+}
+
+impl Entry {
+    fn uninitialized() -> Self {
+        Self {
+            key: null_mut(),
+            value: Value::Nil,
+        }
+    }
+
+    fn is_uninitialized(&self) -> bool {
+        self.key.is_null() && self.value.is_nil()
     }
 }

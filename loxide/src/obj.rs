@@ -1,25 +1,26 @@
 use std::{
     alloc::{self, Layout},
-    collections::{hash_map::DefaultHasher, LinkedList},
-    hash::{BuildHasher, Hash, Hasher},
+    collections::LinkedList,
     mem::{self},
-    ptr::{self, NonNull},
+    ptr::{self, addr_of_mut, null_mut, NonNull},
     slice,
 };
 
-use fnv::FnvHasher;
-
 use crate::{
-    table::{LoxHash, Table},
+    chunk::Chunk,
+    native_fn::NativeFnKind,
+    table::{ObjHash, Table},
     value::Value,
 };
 
-pub type ObjList = LinkedList<*mut Obj>;
+pub type ObjList = LinkedList<NonNull<Obj>>;
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ObjKind {
     Str,
+    Fn,
+    Native,
 }
 
 #[repr(C)]
@@ -27,27 +28,42 @@ pub struct Obj {
     pub kind: ObjKind,
 }
 
+pub struct ObjPtrWrapper(pub *mut Obj);
+
+#[repr(C)]
+pub struct ObjNative {
+    pub obj: Obj,
+    pub function: NativeFnKind,
+}
+
+#[repr(C)]
+pub struct ObjFunction {
+    pub obj: Obj,
+    pub arity: u8,
+    pub chunk: Chunk,
+    pub name: *mut ObjString,
+}
+
 #[repr(C)]
 pub struct ObjString {
     pub obj: Obj,
     pub len: u32,
-    pub hash: LoxHash,
+    pub hash: ObjHash,
     pub chars: NonNull<u8>,
 }
 
 impl Obj {
     /// Safety:
     /// T must be type-punnable from T <-> Obj
-    unsafe fn alloc<T>(obj_list: &mut ObjList, kind: ObjKind) -> *mut T {
+    unsafe fn alloc<T>(obj_list: &mut ObjList, kind: ObjKind) -> NonNull<T> {
         let layout = Layout::from_size_align(mem::size_of::<T>(), mem::align_of::<T>()).unwrap();
-        let dst = alloc::alloc(layout);
-        let obj: *mut Obj = dst as *mut Obj;
+        let obj = NonNull::new(alloc::alloc(layout) as *mut Obj).expect("Heap allocation failed.");
 
-        (*obj).kind = kind;
+        (*obj.as_ptr()).kind = kind;
 
         obj_list.push_front(obj);
 
-        obj as *mut T
+        obj.cast()
     }
 
     unsafe fn dealloc<T>(obj: *mut Obj) {
@@ -55,8 +71,9 @@ impl Obj {
         alloc::dealloc(obj as *mut u8, layout)
     }
 
-    pub fn free(obj: *mut Obj) {
+    pub fn free(obj: NonNull<Obj>) {
         unsafe {
+            let obj = obj.as_ptr();
             let kind = (*obj).kind;
 
             match kind {
@@ -74,8 +91,71 @@ impl Obj {
 
                     Self::dealloc::<ObjString>(obj)
                 }
+                ObjKind::Fn => {
+                    // `name` will be freed by string table
+                    // just need to free `chunk`
+                    let _chunk = ptr::read(addr_of_mut!((*obj.cast::<ObjFunction>()).chunk));
+
+                    Self::dealloc::<ObjFunction>(obj)
+                }
+                ObjKind::Native => Self::dealloc::<ObjNative>(obj),
             }
         }
+    }
+}
+
+impl std::fmt::Debug for ObjPtrWrapper {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let ptr = match NonNull::new(self.0) {
+            Some(ptr) => ptr,
+            None => return write!(f, "{:?}", None as Option<i32>),
+        };
+
+        let kind = unsafe { ptr.as_ref().kind };
+        match kind {
+            ObjKind::Str => {
+                let obj_str = unsafe { ptr.cast::<ObjString>().as_ref() };
+                write!(f, "{:?}", obj_str.as_str())
+            }
+            ObjKind::Fn => unsafe {
+                let obj_fn = ptr.cast::<ObjFunction>().as_ref();
+                f.debug_struct("Function")
+                    .field("name", &ObjPtrWrapper(obj_fn.name as *mut Obj))
+                    .field("arity", &obj_fn.arity)
+                    // .field("chunk", &obj_fn.chunk)
+                    .finish()
+            },
+            ObjKind::Native => {
+                let function = unsafe { ptr.cast::<ObjNative>().as_ref().function };
+                write!(f, "{:?}", function)
+            }
+        }
+    }
+}
+
+impl ObjNative {
+    pub fn new(obj_list: &mut ObjList, kind: NativeFnKind) -> NonNull<ObjNative> {
+        let obj_native: NonNull<ObjNative> = unsafe { Obj::alloc(obj_list, ObjKind::Native) };
+
+        unsafe {
+            (*obj_native.as_ptr()).function = kind;
+        }
+
+        obj_native
+    }
+}
+
+impl ObjFunction {
+    pub fn new(obj_list: &mut ObjList, name: *mut ObjString) -> NonNull<ObjFunction> {
+        let obj_fn = unsafe { Obj::alloc::<ObjFunction>(obj_list, ObjKind::Fn) };
+
+        unsafe {
+            (*obj_fn.as_ptr()).arity = 0;
+            addr_of_mut!((*obj_fn.as_ptr()).chunk).write(Chunk::new());
+            (*obj_fn.as_ptr()).name = name;
+        }
+
+        obj_fn
     }
 }
 
@@ -92,8 +172,8 @@ impl ObjString {
         obj_list: &mut ObjList,
         chars: *mut u8,
         len: u32,
-    ) -> *mut ObjString {
-        let hash = LoxHash::hash_string(unsafe {
+    ) -> NonNull<ObjString> {
+        let hash = ObjHash::hash_string(unsafe {
             std::str::from_utf8_unchecked(std::slice::from_raw_parts(chars, len as usize))
         });
 
@@ -104,7 +184,7 @@ impl ObjString {
             hash,
         ) {
             Some(interned) => {
-                return interned.as_ptr();
+                return interned;
             }
             None => (),
         }
@@ -122,15 +202,15 @@ impl ObjString {
         interned_strings: &mut Table,
         obj_list: &mut ObjList,
         string: &str,
-    ) -> *mut ObjString {
-        let hash = LoxHash::hash_string(string);
+    ) -> NonNull<ObjString> {
+        let hash = ObjHash::hash_string(string);
         match interned_strings.find_string(string, hash) {
-            Some(interned) => return interned.as_ptr(),
+            Some(interned) => return interned,
             None => (),
         };
 
         // Allocating layout for zero length data is not allowed
-        if string.len() == 0 {
+        if string.is_empty() {
             return Self::alloc_str(interned_strings, obj_list, NonNull::dangling(), 0, hash);
         }
 
@@ -154,13 +234,14 @@ impl ObjString {
         obj_list: &mut ObjList,
         chars: NonNull<u8>,
         len: u32,
-        hash: LoxHash,
-    ) -> *mut ObjString {
+        hash: ObjHash,
+    ) -> NonNull<ObjString> {
         // Safety:
         // This is safe because ObjString <-> Obj
         let ptr = unsafe { Obj::alloc::<ObjString>(obj_list, ObjKind::Str) };
 
         unsafe {
+            let ptr = ptr.as_ptr();
             (*ptr).len = len;
             (*ptr).chars = chars;
             (*ptr).hash = hash;

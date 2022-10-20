@@ -1,5 +1,6 @@
 pub mod chunk;
 pub mod compile;
+pub mod native_fn;
 pub mod obj;
 pub mod table;
 pub mod value;
@@ -7,15 +8,12 @@ pub mod vm;
 
 use std::{io::BufRead, path::Path};
 
-use compile::Compiler;
+use compile::{Compiler, Parser, Scanner};
+use obj::ObjList;
 use table::Table;
 use vm::{InterpretError, InterpretResult};
 
-use crate::{
-    chunk::{Chunk, Opcode},
-    value::Value,
-    vm::VM,
-};
+use crate::{chunk::Chunk, compile::FunctionKind, vm::VM};
 
 fn main() {
     // run_file("./test.lox")
@@ -36,9 +34,9 @@ fn main() {
 
 fn repl() {
     let stdin = std::io::stdin();
-    let mut lines = stdin.lock().lines();
+    let lines = stdin.lock().lines();
 
-    while let Some(line) = lines.next() {
+    for line in lines {
         let line = line.unwrap();
         interpret(&line).unwrap();
     }
@@ -50,19 +48,26 @@ fn run_file<P: AsRef<Path>>(path: P) {
 }
 
 fn interpret(src: &str) -> InterpretResult<VM> {
-    let chunk = Chunk::new();
+    let mut obj_list = ObjList::default();
+    let mut interned_strings = Table::new();
 
-    let (chunk, obj_list, strings) = {
-        let mut compiler = Compiler::new(src, chunk, Table::new());
+    let function = {
+        let mut scanner = Scanner::new(src);
+        let mut parser = Parser::new();
+        let mut compiler = Compiler::new(
+            FunctionKind::Script,
+            &mut interned_strings,
+            &mut obj_list,
+            &mut scanner,
+            &mut parser,
+        );
         if !compiler.compile() {
             return Err(InterpretError::CompileError);
         }
-        (compiler.chunk, compiler.obj_list, compiler.interned_strings)
+        compiler.function
     };
 
-    println!("CHUNK: {:?}", chunk);
-
-    let mut vm = VM::new(chunk, obj_list, strings);
+    let mut vm = VM::new(function, obj_list, interned_strings);
 
     vm.run().map(|_| vm)
 }
@@ -71,12 +76,54 @@ fn interpret(src: &str) -> InterpretResult<VM> {
 mod test {
 
     use crate::{
-        compile::{Local, Token},
+        compile::Token,
         interpret,
-        obj::{Obj, ObjString},
-        table::Table,
+        native_fn::NativeFn,
+        obj::{Obj, ObjFunction, ObjString},
+        table::{ObjHash, Table},
         value::Value,
     };
+
+    #[test]
+    fn call_native_fn() {
+        let src = r#"
+        var num = __dummy();"#;
+        let mut vm = interpret(src).unwrap();
+        let num_str = vm.get_string("num");
+        let value = vm.globals.get(num_str);
+        assert_eq!(value, Some(Value::Number(420.0)));
+    }
+
+    #[test]
+    fn call_fn() {
+        let src = r#"
+        fun add420(num) {
+          return num + 420;
+        }
+
+        fun add69(num) {
+          return num + 69;
+        }
+
+        var num = add420(1);
+        num = add69(num);
+        num = add420(num);"#;
+        let mut vm = interpret(src).unwrap();
+        let num_str = vm.get_string("num");
+        let value = vm.globals.get(num_str);
+        assert_eq!(value, Some(Value::Number(910.0)));
+    }
+
+    #[test]
+    fn print_fn() {
+        let src = r#"
+        fun bigNoob() {
+          print "OH YEAH";
+        }
+
+        print bigNoob;"#;
+        let vm = interpret(src).unwrap();
+    }
 
     #[test]
     fn if_stmt() {
@@ -127,7 +174,7 @@ mod test {
           noob = x;
         }
 "#;
-        let mut vm = interpret(src).unwrap();
+        let _vm = interpret(src).unwrap();
 
         // let noob = vm.get_string("global");
         // let top = vm.globals.get(noob);
@@ -161,12 +208,6 @@ mod test {
     fn print() {
         let src = r#"print 1 + 2;"#;
         let vm = interpret(src).unwrap();
-
-        {
-            assert_eq!(vm.stack_top, 0);
-            // let top = unsafe { vm.stack[0].assume_init() };
-            // assert_eq!(top.as_str(), Some("3"))
-        }
     }
 
     #[test]
@@ -227,10 +268,18 @@ mod test {
             0u16 << 8 | 2u16
         );
     }
+
+    #[test]
+    fn empty_string_hash() {
+        println!("{:?}", std::mem::size_of::<NativeFn>());
+        println!("{:?}", std::mem::size_of::<Value>());
+    }
 }
 
-fn f(a: i32, b: i32) -> i32 {}
+fn _f(_a: i32, _b: i32) -> i32 {
+    420
+}
 
-fn noob() {
-    let noob = f(f(1, 2), f())
+fn _noob() {
+    let _noob = _f(_f(1, 2), _f(3, 4));
 }

@@ -28,6 +28,7 @@ pub enum Opcode {
     JumpIfFalse,
     Jump,
     Loop,
+    Call,
 }
 
 impl Opcode {
@@ -58,6 +59,7 @@ impl Opcode {
             21 => Some(JumpIfFalse),
             22 => Some(Jump),
             23 => Some(Loop),
+            24 => Some(Call),
             _ => None,
         }
     }
@@ -137,7 +139,7 @@ impl Chunk {
                 *offset += 2;
                 Some(Instruction::Constant(op.unwrap(), constant))
             }
-            Some(Opcode::GetLocal | Opcode::SetLocal) => {
+            Some(Opcode::GetLocal | Opcode::SetLocal | Opcode::Call) => {
                 let slot = self.code[*offset + 1];
                 *offset += 2;
                 Some(Instruction::Byte(op.unwrap(), slot))
@@ -236,9 +238,4 @@ impl<'a> Iterator for ChunkIterDebug<'a> {
 
         inner.map(|inner| InstructionDebug { inner, line })
     }
-}
-
-#[cfg(test)]
-mod test {
-    use crate::chunk::{Chunk, Opcode};
 }
