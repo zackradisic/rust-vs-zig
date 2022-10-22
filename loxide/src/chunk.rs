@@ -29,6 +29,9 @@ pub enum Opcode {
     Jump,
     Loop,
     Call,
+    Closure,
+    GetUpvalue,
+    SetUpvalue,
 }
 
 impl Opcode {
@@ -60,6 +63,9 @@ impl Opcode {
             22 => Some(Jump),
             23 => Some(Loop),
             24 => Some(Call),
+            25 => Some(Closure),
+            26 => Some(GetUpvalue),
+            27 => Some(SetUpvalue),
             _ => None,
         }
     }
@@ -151,6 +157,13 @@ impl Chunk {
                 let val = ((byte1 as u16) << 8) | (byte2 as u16);
                 Some(Instruction::Jump(op.unwrap(), val))
             }
+            Some(Opcode::Closure) => {
+                *offset += 1;
+                let constant_idx = self.code[*offset];
+                *offset += 1;
+                let value = self.constants[constant_idx as usize];
+                Some(Instruction::Closure(value))
+            }
             otherwise => panic!("Invalid opcode {:?}", otherwise),
         }
     }
@@ -181,6 +194,7 @@ pub enum Instruction {
     Constant(Opcode, Value),
     Byte(Opcode, u8),
     Jump(Opcode, u16),
+    Closure(Value),
 }
 
 impl std::fmt::Debug for Instruction {
@@ -194,6 +208,7 @@ impl std::fmt::Debug for Instruction {
             }
             Instruction::Byte(op, val) => f.debug_tuple("Byte").field(op).field(val).finish(),
             Instruction::Jump(op, offset) => f.debug_tuple("Jump").field(op).field(offset).finish(),
+            Instruction::Closure(val) => f.debug_tuple("Closure").field(val).finish(),
         }
     }
 }

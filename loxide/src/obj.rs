@@ -1,7 +1,7 @@
 use std::{
     alloc::{self, Layout},
     collections::LinkedList,
-    mem::{self},
+    mem,
     ptr::{self, addr_of_mut, NonNull},
     slice,
 };
@@ -21,6 +21,7 @@ pub enum ObjKind {
     Str,
     Fn,
     Native,
+    Closure,
 }
 
 #[repr(C)]
@@ -34,6 +35,12 @@ pub struct ObjPtrWrapper(pub *mut Obj);
 pub struct ObjNative {
     pub obj: Obj,
     pub function: NativeFnKind,
+}
+
+#[repr(C)]
+pub struct ObjClosure {
+    pub obj: Obj,
+    pub function: NonNull<ObjFunction>,
 }
 
 #[repr(C)]
@@ -99,6 +106,7 @@ impl Obj {
                     Self::dealloc::<ObjFunction>(obj)
                 }
                 ObjKind::Native => Self::dealloc::<ObjNative>(obj),
+                ObjKind::Closure => Self::dealloc::<ObjClosure>(obj),
             }
         }
     }
@@ -129,6 +137,15 @@ impl std::fmt::Debug for ObjPtrWrapper {
                 let function = unsafe { ptr.cast::<ObjNative>().as_ref().function };
                 write!(f, "{:?}", function)
             }
+            ObjKind::Closure => {
+                let ptr: NonNull<ObjClosure> = ptr.cast();
+                f.debug_struct("Closure")
+                    .field(
+                        "function",
+                        &ObjPtrWrapper(unsafe { ptr.as_ref() }.function.as_ptr() as *mut Obj),
+                    )
+                    .finish()
+            }
         }
     }
 }
@@ -142,6 +159,16 @@ impl ObjNative {
         }
 
         obj_native
+    }
+}
+
+impl ObjClosure {
+    pub fn new(obj_list: &mut ObjList, function: NonNull<ObjFunction>) -> NonNull<ObjClosure> {
+        let obj_closure: NonNull<ObjClosure> = unsafe { Obj::alloc(obj_list, ObjKind::Closure) };
+
+        unsafe { (*obj_closure.as_ptr()).function = function };
+
+        obj_closure
     }
 }
 

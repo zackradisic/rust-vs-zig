@@ -4,7 +4,7 @@ use std::{
     ptr::NonNull,
 };
 
-use crate::obj::{Obj, ObjFunction, ObjKind, ObjNative, ObjPtrWrapper, ObjString};
+use crate::obj::{Obj, ObjClosure, ObjFunction, ObjKind, ObjNative, ObjPtrWrapper, ObjString};
 
 pub type ValueArray = Vec<Value>;
 
@@ -74,6 +74,28 @@ impl Value {
                 let kind = (*obj.as_ptr()).kind;
                 match kind {
                     ObjKind::Native => Some(obj.cast().as_ref()),
+                    _ => None,
+                }
+            },
+            _ => None,
+        }
+    }
+
+    pub fn as_closure_ptr(&self) -> Option<NonNull<ObjClosure>> {
+        match self {
+            Value::Obj(obj) if unsafe { (*obj.as_ptr()).kind == ObjKind::Closure } => {
+                Some(obj.cast())
+            }
+            _ => None,
+        }
+    }
+
+    pub fn as_obj_closure(&self) -> Option<&ObjClosure> {
+        match *self {
+            Value::Obj(obj) => unsafe {
+                let kind = (*obj.as_ptr()).kind;
+                match kind {
+                    ObjKind::Closure => Some(obj.cast().as_ref()),
                     _ => None,
                 }
             },

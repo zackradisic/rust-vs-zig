@@ -52,19 +52,11 @@ fn interpret(src: &str) -> InterpretResult<VM> {
     let mut interned_strings = Table::new();
 
     let function = {
-        let mut scanner = Scanner::new(src);
-        let mut parser = Parser::new();
-        let mut compiler = Compiler::new(
-            FunctionKind::Script,
-            &mut interned_strings,
-            &mut obj_list,
-            &mut scanner,
-            &mut parser,
-        );
-        if !compiler.compile() {
+        let mut parser = Parser::new(src, &mut interned_strings, &mut obj_list);
+        if !parser.compile() {
             return Err(InterpretError::CompileError);
         }
-        compiler.function
+        parser.compiler.function
     };
 
     let mut vm = VM::new(function, obj_list, interned_strings);

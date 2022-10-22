@@ -8,7 +8,7 @@ use std::{
 use crate::{
     chunk::{InstructionDebug, Opcode},
     native_fn::NativeFnKind,
-    obj::{Obj, ObjFunction, ObjKind, ObjList, ObjNative, ObjString},
+    obj::{Obj, ObjClosure, ObjFunction, ObjKind, ObjList, ObjNative, ObjString},
     table::{ObjHash, Table},
     value::Value,
 };
@@ -32,13 +32,17 @@ pub struct CallFrame {
     /// index into VM's value stack at the first slot this function can use
     pub slots_offset: u32,
 
-    pub function: NonNull<ObjFunction>,
+    pub closure: NonNull<ObjClosure>,
 }
 
 impl CallFrame {
     #[inline]
     fn function(&self) -> &ObjFunction {
-        unsafe { self.function.as_ref() }
+        unsafe { self.closure.as_ref().function.as_ref() }
+    }
+    #[inline]
+    fn closure(&self) -> &ObjClosure {
+        unsafe { self.closure.as_ref() }
     }
 }
 
@@ -59,16 +63,19 @@ pub struct VM {
 }
 
 impl VM {
-    pub fn new(function: NonNull<ObjFunction>, obj_list: ObjList, strings: Table) -> Self {
+    pub fn new(function: NonNull<ObjFunction>, mut obj_list: ObjList, strings: Table) -> Self {
+        // im pretty sure we might need to push/pop function here
+        // becuase of gc but will just wait until that chapter
+        let closure = ObjClosure::new(&mut obj_list, function);
         let mut call_frames = [MaybeUninit::uninit(); FRAMES_MAX];
         call_frames[0] = MaybeUninit::new(CallFrame {
             instr_offset: 0,
             slots_offset: 0,
-            function,
+            closure,
         });
 
         let mut stack = [MaybeUninit::uninit(); STACK_MAX];
-        stack[0] = MaybeUninit::new(Value::Obj(function.cast()));
+        stack[0] = MaybeUninit::new(Value::Obj(closure.cast()));
 
         let mut this = Self {
             obj_list,
@@ -139,7 +146,7 @@ impl VM {
         {
             unsafe {
                 let frame = frame.assume_init();
-                let function = frame.function.as_ref();
+                let function = frame.function();
                 let instruction = frame.instr_offset;
                 eprintln!(
                     "[line {}] in {}",
@@ -200,8 +207,8 @@ impl VM {
         self.push(Value::Obj(obj_str.cast()))
     }
 
-    fn call(&mut self, function: NonNull<ObjFunction>, arg_count: u8) -> bool {
-        let arity = unsafe { function.as_ref().arity };
+    fn call(&mut self, closure: NonNull<ObjClosure>, arg_count: u8) -> bool {
+        let arity = unsafe { closure.as_ref().function.as_ref().arity };
         if arg_count != arity {
             self.runtime_error(
                 format!("Expected {} arguments but got {}.", arg_count, arity).into(),
@@ -214,7 +221,7 @@ impl VM {
             return false;
         }
 
-        self.next_call_frame(function, arg_count);
+        self.next_call_frame(closure, arg_count);
 
         true
     }
@@ -248,7 +255,7 @@ impl VM {
             Value::Obj(obj) => {
                 let kind = unsafe { obj.as_ref().kind };
                 match kind {
-                    ObjKind::Fn => return self.call(obj.cast(), arg_count),
+                    ObjKind::Closure => return self.call(obj.cast(), arg_count),
                     ObjKind::Native => {
                         let native: NonNull<ObjNative> = obj.cast();
                         let stack_begin = self.stack_top as usize - arg_count as usize;
@@ -294,6 +301,11 @@ impl VM {
             let byte = self.read_byte();
 
             match Opcode::from_u8(byte) {
+                Some(Opcode::Closure) => {
+                    let function = self.read_constant().as_fn_ptr().unwrap();
+                    let closure = ObjClosure::new(&mut self.obj_list, function);
+                    self.push(Value::Obj(closure.cast()));
+                }
                 Some(Opcode::Call) => {
                     let arg_count = self.read_byte();
                     if !self.call_value(self.peek(arg_count as u32), arg_count) {
@@ -451,13 +463,13 @@ impl VM {
     }
 
     #[inline]
-    fn next_call_frame(&mut self, function: NonNull<ObjFunction>, arg_count: u8) {
+    fn next_call_frame(&mut self, closure: NonNull<ObjClosure>, arg_count: u8) {
         let call_frame = self.call_frames[self.call_frame_count as usize].as_mut_ptr();
         self.call_frame_count += 1;
         unsafe {
             (*call_frame).instr_offset = 0;
             (*call_frame).slots_offset = self.stack_top - arg_count as u32 - 1;
-            (*call_frame).function = function;
+            (*call_frame).closure = closure;
         }
     }
 
