@@ -1,3 +1,5 @@
+#![feature(let_chains)]
+
 pub mod chunk;
 pub mod compile;
 pub mod native_fn;
@@ -67,6 +69,8 @@ fn interpret(src: &str) -> InterpretResult<VM> {
 #[cfg(test)]
 mod test {
 
+    use std::ptr::addr_of_mut;
+
     use crate::{
         compile::Token,
         interpret,
@@ -75,6 +79,77 @@ mod test {
         table::Table,
         value::Value,
     };
+
+    #[test]
+    fn upvalue_closed() {
+        let src = r#"
+fun makeClosure() {
+  var a = 1;
+  fun f() {
+    a = a + 1;
+    return a;
+  }
+  return f;
+}
+
+var closure = makeClosure();
+var first = closure();
+var anotherClosure = makeClosure();
+var second = anotherClosure();
+var third = closure();"#;
+        let mut vm = interpret(src).unwrap();
+
+        let first_str = vm.get_string("first");
+        let second_str = vm.get_string("second");
+        let third_str = vm.get_string("third");
+
+        let value1 = vm.globals.get(first_str);
+        let value2 = vm.globals.get(second_str);
+        let value3 = vm.globals.get(third_str);
+
+        assert_eq!(value1, Some(Value::Number(2.0)));
+        assert_eq!(value2, Some(Value::Number(2.0)));
+        assert_eq!(value3, Some(Value::Number(3.0)));
+    }
+
+    #[test]
+    fn set_immediate_upvalue() {
+        let src = r#"
+fun outer() {
+  var x = 420;
+  fun inner() {
+    x = x + 1;
+    return x;
+  }
+  return inner();
+}
+var value = outer();"#;
+        let mut vm = interpret(src).unwrap();
+        let value_str = vm.get_string("value");
+
+        let value = vm.globals.get(value_str);
+
+        assert_eq!(value, Some(Value::Number(421.0)));
+    }
+
+    #[test]
+    fn immediate_upvalue() {
+        let src = r#"
+var result = "nothing";
+fun outer() {
+  var x = 420;
+  fun inner() {
+    result = x;
+  }
+  inner();
+}
+outer();"#;
+        let mut vm = interpret(src).unwrap();
+        let result_str = vm.get_string("result");
+        let value = vm.globals.get(result_str);
+
+        assert_eq!(value, Some(Value::Number(420.0)));
+    }
 
     #[test]
     fn call_native_fn() {
@@ -263,6 +338,19 @@ mod test {
 
     #[test]
     fn empty_string_hash() {
+        struct Test {
+            foo: usize,
+            bar: usize,
+        }
+
+        let mut test = Box::into_raw(Box::new(Test {
+            foo: 0,
+            bar: usize::MAX,
+        }));
+
+        let test_bar_addr = unsafe { addr_of_mut!((*test).bar) };
+        println!("{:?} {:?}", test, test_bar_addr);
+
         println!("{:?}", std::mem::size_of::<NativeFn>());
         println!("{:?}", std::mem::size_of::<Value>());
     }

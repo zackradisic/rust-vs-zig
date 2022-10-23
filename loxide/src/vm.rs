@@ -2,13 +2,13 @@ use std::{
     alloc::{self, Layout},
     borrow::Cow,
     mem::MaybeUninit,
-    ptr::{self, NonNull},
+    ptr::{self, addr_of, addr_of_mut, null_mut, NonNull},
 };
 
 use crate::{
     chunk::{InstructionDebug, Opcode},
     native_fn::NativeFnKind,
-    obj::{Obj, ObjClosure, ObjFunction, ObjKind, ObjList, ObjNative, ObjString},
+    obj::{Obj, ObjClosure, ObjFunction, ObjKind, ObjList, ObjNative, ObjString, ObjUpvalue},
     table::{ObjHash, Table},
     value::Value,
 };
@@ -46,13 +46,17 @@ impl CallFrame {
     }
 }
 
-const U8_COUNT: usize = (u8::MAX) as usize + 1; // 256
+pub const U8_COUNT: usize = (u8::MAX) as usize + 1; // 256
 const FRAMES_MAX: usize = 64;
 const STACK_MAX: usize = 64 * U8_COUNT;
 
 pub struct VM {
     pub stack: [MaybeUninit<Value>; STACK_MAX],
     pub stack_top: u32,
+    /// linked list of open upvalues for the top-most stack,
+    /// this points to the top-most open upvalue
+    /// (so last in this list is the first open upvalue on the stack)
+    pub open_upvalues: *mut ObjUpvalue,
 
     pub call_frames: [MaybeUninit<CallFrame>; FRAMES_MAX],
     pub call_frame_count: u32,
@@ -78,6 +82,7 @@ impl VM {
         stack[0] = MaybeUninit::new(Value::Obj(closure.cast()));
 
         let mut this = Self {
+            open_upvalues: null_mut(),
             obj_list,
             globals: Table::new(),
             interned_strings: strings,
@@ -127,6 +132,7 @@ impl VM {
     fn reset_stack(&mut self) {
         self.stack_top = 0;
         self.call_frame_count = 0;
+        self.open_upvalues = null_mut();
     }
 
     fn runtime_error<'a>(&mut self, err: Cow<'a, str>) {
@@ -277,6 +283,86 @@ impl VM {
         false
     }
 
+    fn capture_upvalue(&mut self, offset: u8) -> NonNull<ObjUpvalue> {
+        let slot = self.top_call_frame().slots_offset;
+        let local = NonNull::new(self.stack[slot as usize + offset as usize].as_mut_ptr()).unwrap();
+
+        unsafe {
+            let mut prev_upvalue: *mut ObjUpvalue = null_mut();
+            let mut upvalue: *mut ObjUpvalue = self.open_upvalues;
+
+            // the list is sorted in stack order (first upvalue location points to top-most local)
+            // so we keep iterating skipping upvalues whose location is above our desired, hence the
+            // `(*upvalue).location > local`
+            while !upvalue.is_null() && (*upvalue).location > local {
+                prev_upvalue = upvalue;
+                upvalue = (*upvalue).next;
+            }
+
+            match NonNull::new(upvalue) {
+                // found a captured upvalue, reuse it
+                Some(upvalue_nonnull) if (*upvalue).location == local => return upvalue_nonnull,
+                _ => (),
+            }
+
+            let created_upvalue = ObjUpvalue::new(&mut self.obj_list, local);
+            (*created_upvalue.as_ptr()).next = upvalue;
+
+            if prev_upvalue.is_null() {
+                self.open_upvalues = created_upvalue.as_ptr();
+            } else {
+                (*prev_upvalue).next = created_upvalue.as_ptr();
+            }
+
+            return created_upvalue;
+        }
+    }
+
+    fn read_closure_upvalues(&mut self, mut closure: NonNull<ObjClosure>) {
+        unsafe {
+            let closure = closure.as_mut();
+            for i in 0..closure.upvalue_count {
+                let byte = self.read_byte();
+                let is_local = byte == 1;
+                let index = self.read_byte();
+
+                let upvalue = if is_local {
+                    self.capture_upvalue(index).as_ptr()
+                } else {
+                    // at this point we haven't switched call frame to closure yet, so we
+                    // read from current call frame which is actually closure's surrounding call frame
+                    *(self
+                        .top_call_frame()
+                        .closure
+                        .as_ref()
+                        .upvalues
+                        .as_ptr()
+                        .offset(index as isize))
+                };
+
+                (*closure.upvalues.as_ptr().offset(i as isize)) = upvalue;
+            }
+        }
+    }
+
+    /// Closes upvalues of a scope
+    fn close_upvalues(&mut self, last_stack_offset: u32) {
+        unsafe {
+            let last = NonNull::new(self.stack[last_stack_offset as usize].as_mut_ptr()).unwrap();
+            while let Some(upvalue) = NonNull::new(self.open_upvalues) {
+                if (*upvalue.as_ptr()).location < last {
+                    return;
+                }
+
+                let upvalue_ptr = upvalue.as_ptr();
+                (*upvalue_ptr).closed = *((*upvalue_ptr).location.as_ptr());
+                (*upvalue_ptr).location =
+                    NonNull::new(addr_of_mut!((*upvalue_ptr).closed)).unwrap();
+                self.open_upvalues = (*upvalue_ptr).next;
+            }
+        }
+    }
+
     pub fn run(&mut self) -> InterpretResult<()> {
         loop {
             #[cfg(debug_assertions)]
@@ -301,9 +387,46 @@ impl VM {
             let byte = self.read_byte();
 
             match Opcode::from_u8(byte) {
+                Some(Opcode::CloseUpvalue) => {
+                    self.close_upvalues(self.stack_top - 1);
+                    self.pop();
+                }
+                Some(Opcode::GetUpvalue) => {
+                    let slot = self.read_byte();
+                    let val = unsafe {
+                        *(self
+                            .top_call_frame()
+                            .closure
+                            .as_ref()
+                            .upvalue_at_slot(slot as usize)
+                            .unwrap()
+                            .as_ref()
+                            .location
+                            .as_ptr())
+                    };
+
+                    self.push(val);
+                }
+                Some(Opcode::SetUpvalue) => {
+                    let slot = self.read_byte();
+                    let val = self.peek(0);
+                    unsafe {
+                        let loc_ptr = self
+                            .top_call_frame()
+                            .closure()
+                            .upvalue_at_slot(slot as usize)
+                            .unwrap()
+                            .as_mut()
+                            .location
+                            .as_ptr();
+
+                        (*loc_ptr) = val;
+                    }
+                }
                 Some(Opcode::Closure) => {
                     let function = self.read_constant().as_fn_ptr().unwrap();
                     let closure = ObjClosure::new(&mut self.obj_list, function);
+                    self.read_closure_upvalues(closure);
                     self.push(Value::Obj(closure.cast()));
                 }
                 Some(Opcode::Call) => {
@@ -424,7 +547,11 @@ impl VM {
                         self.pop();
                         return Ok(());
                     }
+
                     let result = self.pop();
+                    let slots_offset = self.top_call_frame().slots_offset;
+                    self.close_upvalues(slots_offset);
+
                     self.call_frame_count -= 1;
 
                     self.stack_top = self.top_call_frame().slots_offset;

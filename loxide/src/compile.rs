@@ -8,6 +8,7 @@ use crate::{
     obj::{ObjFunction, ObjList, ObjString},
     table::Table,
     value::Value,
+    vm::U8_COUNT,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -95,6 +96,7 @@ macro_rules! parse_rule {
 pub struct Local<'src> {
     name: Token<'src>,
     depth: Option<u32>,
+    is_captured: bool,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq)]
@@ -114,15 +116,26 @@ pub struct Locals<'src> {
     count: u8,
 }
 
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct Upvalue {
+    // callframe-relative index in the stack to where this value is
+    pub index: u8,
+    // `false` when the upvalue captures another upvalue
+    pub is_local: bool,
+}
+
 pub struct Compiler<'src> {
     pub function: NonNull<ObjFunction>,
+    enclosing: Option<Box<Compiler<'src>>>,
     function_kind: FunctionKind,
     locals: Locals<'src>,
     scope_depth: usize,
+    upvalues: [MaybeUninit<Upvalue>; u8::MAX as usize],
 }
 
 impl<'src> Compiler<'src> {
     const UNINTIALIZED_LOCAL: MaybeUninit<Local<'src>> = MaybeUninit::uninit();
+    const UNINTIALIZED_UPVALUE: MaybeUninit<Upvalue> = MaybeUninit::uninit();
 
     pub fn new(
         function_kind: FunctionKindT<Token>,
@@ -140,6 +153,7 @@ impl<'src> Compiler<'src> {
         let function = ObjFunction::new(obj_list, function_name);
 
         let mut this = Self {
+            enclosing: None,
             function,
             function_kind,
             locals: Locals {
@@ -147,15 +161,21 @@ impl<'src> Compiler<'src> {
                 count: 0,
             },
             scope_depth: 0,
+            upvalues: [Self::UNINTIALIZED_UPVALUE; u8::MAX as usize],
         };
 
-        let mut local = unsafe { this.locals.stack[0].assume_init_mut() };
-        local.depth = Some(0);
-        local.name = Token {
-            kind: TokenKind::Nil,
-            line: 0,
-            msg: "",
-        };
+        // Safety:
+        // It is UB to create reference to uninitialized memory so we set this
+        // value through raw pointer
+        unsafe {
+            let mut local_ptr = this.locals.stack[0].as_mut_ptr();
+            (*local_ptr).depth = Some(0);
+            (*local_ptr).name = Token {
+                kind: TokenKind::Nil,
+                line: 0,
+                msg: "",
+            };
+        }
         this.locals.count += 1;
 
         this
@@ -186,17 +206,63 @@ impl<'src> Compiler<'src> {
         unsafe { self.function.as_mut() }
     }
 
-    fn resolve_upvalue(&mut self, name: Token) -> Option<u8> {
-        // let enclosed_locals = match self.enclosing_locals {
-        //     Some(locals) => locals,
-        //     None => return None,
-        // };
+    /// Add up value and return index in compiler's upvalue array
+    fn add_up_value(&mut self, index: u8, is_local: bool, errors: &mut Vec<&str>) -> u8 {
+        unsafe {
+            let upvalue_count = self.function.as_ref().upvalue_count;
 
-        // match self.resolve_local_enclosed(name, enclosed_locals) {
-        //     Some(local) => todo!(),
-        //     None => None,
-        // }
-        todo!()
+            // check if it exists already
+            for (i, upvalue) in self
+                .upvalues
+                .iter()
+                .enumerate()
+                .take(upvalue_count as usize)
+                .rev()
+            {
+                let upvalue = upvalue.assume_init();
+                if upvalue.index == index && upvalue.is_local {
+                    return i as u8;
+                }
+            }
+
+            if upvalue_count == u8::MAX {
+                errors.push("Too many closure variables in function.");
+                return 0;
+            }
+
+            let upvalue_ptr = self.upvalues[upvalue_count as usize].as_mut_ptr();
+
+            (*upvalue_ptr).is_local = is_local;
+            (*upvalue_ptr).index = index;
+
+            self.function.as_mut().upvalue_count += 1;
+            upvalue_count
+        }
+    }
+
+    /// resolves/creates upvalue by recursively travelling upwards in scope
+    /// returns the index of the upvalue in its corresponding Compiler array
+    ///
+    /// this creates a chain of upvalues from this scope to the outer scope where the variable is
+    fn resolve_upvalue(&mut self, name: Token, errors: &mut Vec<&str>) -> Option<u8> {
+        let enclosing = match &mut self.enclosing {
+            Some(enclosing) => enclosing,
+            None => return None,
+        };
+
+        match enclosing.resolve_local(name, errors) {
+            Some(local) => {
+                unsafe {
+                    let local = enclosing.locals.stack[local as usize].assume_init_mut();
+                    local.is_captured = true;
+                }
+                Some(self.add_up_value(local, true, errors))
+            }
+            // recurse
+            None => enclosing
+                .resolve_upvalue(name, errors)
+                .map(|index| self.add_up_value(index, false, errors)),
+        }
     }
 
     fn resolve_local(&mut self, name: Token, errors: &mut Vec<&str>) -> Option<u8> {
@@ -320,7 +386,7 @@ impl<'a, 'src: 'a> Parser<'a, 'src> {
     ];
 
     pub fn new(src: &'src str, interned_strings: &'a mut Table, obj_list: &'a mut ObjList) -> Self {
-        let mut scanner = Scanner::new(src);
+        let scanner = Scanner::new(src);
         let compiler = Box::new(Compiler::new(
             FunctionKindT::Script,
             interned_strings,
@@ -392,7 +458,10 @@ impl<'a, 'src: 'a> Parser<'a, 'src> {
     }
 
     fn resolve_upvalue(&mut self, name: Token) -> Option<u8> {
-        todo!()
+        let mut errors = vec![];
+        let ret = self.compiler.resolve_upvalue(name, &mut errors);
+        self.handle_errors(errors);
+        ret
     }
 
     fn get_rule(kind: TokenKind) -> &'a ParseRule<'a, 'src> {
@@ -402,18 +471,16 @@ impl<'a, 'src: 'a> Parser<'a, 'src> {
     fn named_variable(&mut self, name: Token, ctx: ParseRuleCtx) {
         let (arg, get_op, set_op) = match self.resolve_local(name) {
             Some(arg) => (arg, Opcode::GetLocal as u8, Opcode::SetLocal as u8),
-            None =>
-            /*self
-            .resolve_upvalue(name)
-            .map(|arg| (arg, 1, 2))
-            .unwrap_or_else(|| {*/
-            {
-                (
-                    self.identifier_constant(name),
-                    Opcode::GetGlobal as u8,
-                    Opcode::SetGlobal as u8,
-                )
-            } /*}),*/
+            None => self
+                .resolve_upvalue(name)
+                .map(|arg| (arg, Opcode::GetUpvalue as u8, Opcode::SetUpvalue as u8))
+                .unwrap_or_else(|| {
+                    (
+                        self.identifier_constant(name),
+                        Opcode::GetGlobal as u8,
+                        Opcode::SetGlobal as u8,
+                    )
+                }),
         };
 
         if ctx.can_assign && self.match_tok(TokenKind::Equal) {
@@ -559,10 +626,11 @@ impl<'a, 'src: 'a> Parser<'a, 'src> {
             FunctionKind::Script => FunctionKindT::Script,
         };
 
-        let prev_compiler = std::mem::replace(
+        let temp_compiler = std::mem::replace(
             &mut self.compiler,
             Box::new(Compiler::new(kindt, self.interned_strings, self.obj_list)),
         );
+        self.compiler.enclosing = Some(temp_compiler);
 
         self.begin_scope();
 
@@ -593,10 +661,32 @@ impl<'a, 'src: 'a> Parser<'a, 'src> {
         self.end();
 
         let func = self.compiler.function;
-        self.compiler = prev_compiler;
+        // back to the original compiler
+        let temp_compiler = self.compiler.enclosing.take().unwrap();
+        let temp_compiler = std::mem::replace(&mut self.compiler, temp_compiler);
 
         let val = self.make_constant(Value::Obj(func.cast()));
         self.emit_bytes(Opcode::Closure as u8, val);
+
+        let upvalue_count = unsafe { func.as_ref().upvalue_count };
+        let func_name = unsafe {
+            func.as_ref()
+                .name
+                .as_ref()
+                .map(|obj| obj.as_str())
+                .unwrap_or("top_level")
+        };
+        println!("{:?} {:?}", func_name, upvalue_count);
+        for i in 0..upvalue_count {
+            let upvalue = unsafe { temp_compiler.upvalues[i as usize].assume_init() };
+            println!(
+                "upvalues: {:?} {:?}",
+                if upvalue.is_local { 1 } else { 0 },
+                upvalue.index
+            );
+            self.emit_byte(if upvalue.is_local { 1 } else { 0 });
+            self.emit_byte(upvalue.index);
+        }
     }
 
     fn var_declaration(&mut self) {
@@ -674,6 +764,7 @@ impl<'a, 'src: 'a> Parser<'a, 'src> {
         unsafe {
             (*local).name = *tok;
             (*local).depth = None;
+            (*local).is_captured = false;
         }
     }
 
@@ -894,7 +985,16 @@ impl<'a, 'src: 'a> Parser<'a, 'src> {
                     .unwrap_or(-1)
             } > self.compiler.scope_depth as isize
         {
-            self.emit_byte(Opcode::Pop as u8);
+            let is_captured = unsafe {
+                self.compiler.locals.stack[self.compiler.locals.count as usize - 1]
+                    .assume_init_ref()
+                    .is_captured
+            };
+            self.emit_byte(if is_captured {
+                Opcode::CloseUpvalue as u8
+            } else {
+                Opcode::Pop as u8
+            });
             self.compiler.locals.count -= 1;
         }
     }
@@ -938,7 +1038,17 @@ impl<'a, 'src: 'a> Parser<'a, 'src> {
                         .as_ref()
                         .map(|s| s.as_str())
                         .unwrap_or("script");
-                    println!("{} :: {:#?}", name, self.compiler.current_chunk());
+                    println!(
+                        "{} :: {:#?} :: upvalues :: {:#?}",
+                        name,
+                        self.compiler.current_chunk(),
+                        self.compiler
+                            .upvalues
+                            .iter()
+                            .take(self.compiler.current_fn().upvalue_count as usize)
+                            .map(|val| val.assume_init())
+                            .collect::<Vec<_>>()
+                    );
                 }
             }
         }

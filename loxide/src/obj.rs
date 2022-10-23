@@ -2,12 +2,13 @@ use std::{
     alloc::{self, Layout},
     collections::LinkedList,
     mem,
-    ptr::{self, addr_of_mut, NonNull},
+    ptr::{self, addr_of_mut, null_mut, NonNull},
     slice,
 };
 
 use crate::{
     chunk::Chunk,
+    compile::Upvalue,
     native_fn::NativeFnKind,
     table::{ObjHash, Table},
     value::Value,
@@ -22,6 +23,7 @@ pub enum ObjKind {
     Fn,
     Native,
     Closure,
+    Upvalue,
 }
 
 #[repr(C)]
@@ -38,9 +40,20 @@ pub struct ObjNative {
 }
 
 #[repr(C)]
+pub struct ObjUpvalue {
+    pub obj: Obj,
+    pub location: NonNull<Value>,
+    // open upvalues are in a linkedlist so we can traverse that to reuse upvalues
+    pub next: *mut ObjUpvalue,
+    pub closed: Value,
+}
+
+#[repr(C)]
 pub struct ObjClosure {
     pub obj: Obj,
     pub function: NonNull<ObjFunction>,
+    pub upvalues: NonNull<*mut ObjUpvalue>,
+    pub upvalue_count: u8,
 }
 
 #[repr(C)]
@@ -49,6 +62,7 @@ pub struct ObjFunction {
     pub arity: u8,
     pub chunk: Chunk,
     pub name: *mut ObjString,
+    pub upvalue_count: u8,
 }
 
 #[repr(C)]
@@ -107,6 +121,21 @@ impl Obj {
                 }
                 ObjKind::Native => Self::dealloc::<ObjNative>(obj),
                 ObjKind::Closure => Self::dealloc::<ObjClosure>(obj),
+                ObjKind::Upvalue => {
+                    let upvalues = (*obj.cast::<ObjClosure>()).upvalues;
+                    let upvalues_count = (*obj.cast::<ObjClosure>()).upvalue_count;
+
+                    if upvalues_count != 0 {
+                        // drop upvalues
+                        let _upvalues = Vec::from_raw_parts(
+                            upvalues.as_ptr(),
+                            upvalues_count as usize,
+                            upvalues_count as usize,
+                        );
+                    }
+
+                    Self::dealloc::<ObjUpvalue>(obj);
+                }
             }
         }
     }
@@ -137,15 +166,29 @@ impl std::fmt::Debug for ObjPtrWrapper {
                 let function = unsafe { ptr.cast::<ObjNative>().as_ref().function };
                 write!(f, "{:?}", function)
             }
-            ObjKind::Closure => {
+            ObjKind::Closure => unsafe {
                 let ptr: NonNull<ObjClosure> = ptr.cast();
+                let upvalues = std::slice::from_raw_parts(
+                    ptr.as_ref().upvalues.as_ptr(),
+                    ptr.as_ref().upvalue_count as usize,
+                );
                 f.debug_struct("Closure")
                     .field(
                         "function",
-                        &ObjPtrWrapper(unsafe { ptr.as_ref() }.function.as_ptr() as *mut Obj),
+                        &ObjPtrWrapper(ptr.as_ref().function.as_ptr() as *mut Obj),
                     )
+                    .field("upvalues", &upvalues)
                     .finish()
-            }
+            },
+            ObjKind::Upvalue => unsafe {
+                let ptr: &ObjUpvalue = ptr.cast().as_ref();
+                let loc_ptr = ptr.location;
+                let loc = *ptr.location.as_ptr();
+
+                f.debug_struct("ObjUpvalue")
+                    .field("location", &(loc_ptr, loc))
+                    .finish()
+            },
         }
     }
 }
@@ -162,13 +205,55 @@ impl ObjNative {
     }
 }
 
+impl ObjUpvalue {
+    pub fn new(obj_list: &mut ObjList, location: NonNull<Value>) -> NonNull<ObjUpvalue> {
+        let obj_upvalue: NonNull<ObjUpvalue> = unsafe { Obj::alloc(obj_list, ObjKind::Upvalue) };
+        unsafe {
+            let ptr = obj_upvalue.as_ptr();
+            (*ptr).location = location;
+            (*ptr).next = null_mut();
+            (*ptr).closed = Value::Nil;
+        }
+
+        obj_upvalue
+    }
+
+    // pub fn upvalue_at_slot(&self, slot: usize) -> Option<NonNull<ObjUpvalue>> {
+    //     if self.upv
+    // }
+}
+
 impl ObjClosure {
     pub fn new(obj_list: &mut ObjList, function: NonNull<ObjFunction>) -> NonNull<ObjClosure> {
-        let obj_closure: NonNull<ObjClosure> = unsafe { Obj::alloc(obj_list, ObjKind::Closure) };
+        unsafe {
+            let obj_closure: NonNull<ObjClosure> = Obj::alloc(obj_list, ObjKind::Closure);
 
-        unsafe { (*obj_closure.as_ptr()).function = function };
+            let upvalue_count = (*function.as_ptr()).upvalue_count;
+            let upvalues = if upvalue_count == 0 {
+                NonNull::dangling()
+            } else {
+                let layout = Layout::array::<*mut ObjUpvalue>(upvalue_count as usize).unwrap();
+                NonNull::new(alloc::alloc_zeroed(layout)).unwrap().cast()
+            };
 
-        obj_closure
+            (*obj_closure.as_ptr()).function = function;
+            (*obj_closure.as_ptr()).upvalue_count = upvalue_count;
+            (*obj_closure.as_ptr()).upvalues = upvalues;
+
+            obj_closure
+        }
+    }
+
+    pub fn upvalue_at_slot(&self, slot: usize) -> Option<NonNull<ObjUpvalue>> {
+        if self.upvalue_count == 0 {
+            return None;
+        }
+
+        unsafe {
+            let upvalues =
+                slice::from_raw_parts(self.upvalues.as_ptr(), self.upvalue_count as usize);
+            upvalues.get(slot).and_then(|upval| NonNull::new(*upval))
+        }
     }
 }
 
@@ -178,8 +263,9 @@ impl ObjFunction {
 
         unsafe {
             (*obj_fn.as_ptr()).arity = 0;
-            addr_of_mut!((*obj_fn.as_ptr()).chunk).write(Chunk::new());
             (*obj_fn.as_ptr()).name = name;
+            (*obj_fn.as_ptr()).upvalue_count = 0;
+            addr_of_mut!((*obj_fn.as_ptr()).chunk).write(Chunk::new());
         }
 
         obj_fn

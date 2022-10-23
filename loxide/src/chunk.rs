@@ -1,6 +1,9 @@
 use std::ops::Deref;
 
-use crate::value::{Value, ValueArray};
+use crate::{
+    compile::Upvalue,
+    value::{Value, ValueArray},
+};
 
 #[derive(Copy, Clone, Debug, PartialEq, PartialOrd)]
 pub enum Opcode {
@@ -32,6 +35,7 @@ pub enum Opcode {
     Closure,
     GetUpvalue,
     SetUpvalue,
+    CloseUpvalue,
 }
 
 impl Opcode {
@@ -66,6 +70,7 @@ impl Opcode {
             25 => Some(Closure),
             26 => Some(GetUpvalue),
             27 => Some(SetUpvalue),
+            28 => Some(CloseUpvalue),
             _ => None,
         }
     }
@@ -118,7 +123,8 @@ impl Chunk {
         let op = Opcode::from_u8(instr);
         match op {
             Some(
-                Opcode::Pop
+                Opcode::CloseUpvalue
+                | Opcode::Pop
                 | Opcode::Print
                 | Opcode::Equal
                 | Opcode::Greater
@@ -145,7 +151,13 @@ impl Chunk {
                 *offset += 2;
                 Some(Instruction::Constant(op.unwrap(), constant))
             }
-            Some(Opcode::GetLocal | Opcode::SetLocal | Opcode::Call) => {
+            Some(
+                Opcode::GetUpvalue
+                | Opcode::SetUpvalue
+                | Opcode::GetLocal
+                | Opcode::SetLocal
+                | Opcode::Call,
+            ) => {
                 let slot = self.code[*offset + 1];
                 *offset += 2;
                 Some(Instruction::Byte(op.unwrap(), slot))
@@ -162,7 +174,21 @@ impl Chunk {
                 let constant_idx = self.code[*offset];
                 *offset += 1;
                 let value = self.constants[constant_idx as usize];
-                Some(Instruction::Closure(value))
+                let mut upvalues = vec![];
+
+                let function = unsafe { value.as_fn_ptr().unwrap().as_ref() };
+                for i in 0..function.upvalue_count as usize {
+                    let is_local = if self.code[*offset] == 1 { true } else { false };
+                    *offset += 1;
+                    let index = self.code[*offset];
+                    *offset += 1;
+                    upvalues.push(Upvalue { index, is_local })
+                }
+
+                Some(Instruction::Closure {
+                    function: value,
+                    upvalues,
+                })
             }
             otherwise => panic!("Invalid opcode {:?}", otherwise),
         }
@@ -194,7 +220,10 @@ pub enum Instruction {
     Constant(Opcode, Value),
     Byte(Opcode, u8),
     Jump(Opcode, u16),
-    Closure(Value),
+    Closure {
+        function: Value,
+        upvalues: Vec<Upvalue>,
+    },
 }
 
 impl std::fmt::Debug for Instruction {
@@ -208,7 +237,11 @@ impl std::fmt::Debug for Instruction {
             }
             Instruction::Byte(op, val) => f.debug_tuple("Byte").field(op).field(val).finish(),
             Instruction::Jump(op, offset) => f.debug_tuple("Jump").field(op).field(offset).finish(),
-            Instruction::Closure(val) => f.debug_tuple("Closure").field(val).finish(),
+            Instruction::Closure { function, upvalues } => f
+                .debug_struct("Closure")
+                .field("function", &function)
+                .field("upvalues", &upvalues)
+                .finish(),
         }
     }
 }
