@@ -252,7 +252,7 @@ impl Table {
                     }
                 } else if (*entry.key).len == string.len() as u32
                     && (*entry.key).hash == hash
-                    && (&*entry.key).as_str() == string
+                    && (*entry.key).as_str() == string
                 {
                     return Some(NonNull::new_unchecked(entry.key));
                 }

@@ -10,12 +10,12 @@ pub mod vm;
 
 use std::{io::BufRead, path::Path};
 
-use compile::{Compiler, Parser, Scanner};
+use compile::Parser;
 use obj::ObjList;
 use table::Table;
 use vm::{InterpretError, InterpretResult};
 
-use crate::{compile::FunctionKind, vm::VM};
+use crate::vm::VM;
 
 fn main() {
     // run_file("./test.lox")
@@ -322,18 +322,12 @@ outer();"#;
         let offset = 2;
         let jump = chunk.len() as u32 - offset - 2;
 
-        chunk[offset as usize] = (jump >> 8) as u8 & 0xff;
-        chunk[offset as usize + 1] = jump as u8 & 0xff;
+        chunk[offset as usize] = (jump >> 8) as u8;
+        chunk[offset as usize + 1] = jump as u8;
 
         let val = ((chunk[offset as usize] as u16) << 8) | (chunk[offset as usize + 1] as u16);
 
-        println!(
-            "{} NOOB: {:?} JUMP: {} {}",
-            jump,
-            chunk,
-            val,
-            0u16 << 8 | 2u16
-        );
+        println!("{} NOOB: {:?} JUMP: {} {}", jump, chunk, val, 2u16);
     }
 
     #[test]
@@ -343,7 +337,7 @@ outer();"#;
             bar: usize,
         }
 
-        let mut test = Box::into_raw(Box::new(Test {
+        let test = Box::into_raw(Box::new(Test {
             foo: 0,
             bar: usize::MAX,
         }));

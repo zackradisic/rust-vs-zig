@@ -8,7 +8,6 @@ use crate::{
     obj::{ObjFunction, ObjList, ObjString},
     table::Table,
     value::Value,
-    vm::U8_COUNT,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -958,8 +957,8 @@ impl<'a, 'src: 'a> Parser<'a, 'src> {
             self.error("Too much code to jump over.");
         }
 
-        self.compiler.current_chunk_mut().code[offset as usize] = (jump >> 8) as u8 & 0xff;
-        self.compiler.current_chunk_mut().code[offset as usize + 1] = jump as u8 & 0xff;
+        self.compiler.current_chunk_mut().code[offset as usize] = (jump >> 8) as u8;
+        self.compiler.current_chunk_mut().code[offset as usize + 1] = jump as u8;
     }
 
     fn block(&mut self) {
@@ -1478,9 +1477,7 @@ impl<'src> Scanner<'src> {
             kind,
             // Safety:
             // The input is guaranteed to be valid utf8 so this is safe
-            msg: unsafe {
-                std::str::from_utf8_unchecked(&self.src[self.start as usize..self.current as usize])
-            },
+            msg: unsafe { std::str::from_utf8_unchecked(&self.src[self.start..self.current]) },
             line: self.line as u32,
         }
     }

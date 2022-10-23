@@ -2,7 +2,7 @@ use std::{
     alloc::{self, Layout},
     borrow::Cow,
     mem::MaybeUninit,
-    ptr::{self, addr_of, addr_of_mut, null_mut, NonNull},
+    ptr::{self, addr_of_mut, null_mut, NonNull},
 };
 
 use crate::{
@@ -314,7 +314,7 @@ impl VM {
                 (*prev_upvalue).next = created_upvalue.as_ptr();
             }
 
-            return created_upvalue;
+            created_upvalue
         }
     }
 

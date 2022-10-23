@@ -177,8 +177,8 @@ impl Chunk {
                 let mut upvalues = vec![];
 
                 let function = unsafe { value.as_fn_ptr().unwrap().as_ref() };
-                for i in 0..function.upvalue_count as usize {
-                    let is_local = if self.code[*offset] == 1 { true } else { false };
+                for _i in 0..function.upvalue_count as usize {
+                    let is_local = self.code[*offset] == 1;
                     *offset += 1;
                     let index = self.code[*offset];
                     *offset += 1;

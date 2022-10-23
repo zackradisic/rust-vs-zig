@@ -8,7 +8,6 @@ use std::{
 
 use crate::{
     chunk::Chunk,
-    compile::Upvalue,
     native_fn::NativeFnKind,
     table::{ObjHash, Table},
     value::Value,
