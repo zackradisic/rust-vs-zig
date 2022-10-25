@@ -1,7 +1,10 @@
+#![feature(allocator_api)]
+#![feature(slice_ptr_get)]
 #![feature(let_chains)]
 
 pub mod chunk;
 pub mod compile;
+pub mod mem;
 pub mod native_fn;
 pub mod obj;
 pub mod table;
@@ -11,6 +14,7 @@ pub mod vm;
 use std::{io::BufRead, path::Path};
 
 use compile::Parser;
+use mem::Mem;
 use obj::ObjList;
 use table::Table;
 use vm::{InterpretError, InterpretResult};
@@ -50,18 +54,17 @@ fn run_file<P: AsRef<Path>>(path: P) {
 }
 
 fn interpret(src: &str) -> InterpretResult<VM> {
-    let mut obj_list = ObjList::default();
-    let mut interned_strings = Table::new();
+    let mut mem = Mem::new();
 
     let function = {
-        let mut parser = Parser::new(src, &mut interned_strings, &mut obj_list);
+        let mut parser = Parser::new(src, &mut mem);
         if !parser.compile() {
             return Err(InterpretError::CompileError);
         }
         parser.compiler.function
     };
 
-    let mut vm = VM::new(function, obj_list, interned_strings);
+    let mut vm = VM::new(mem, function);
 
     vm.run().map(|_| vm)
 }
@@ -74,6 +77,7 @@ mod test {
     use crate::{
         compile::Token,
         interpret,
+        mem::Mem,
         native_fn::NativeFn,
         obj::{Obj, ObjString},
         table::Table,
@@ -103,9 +107,9 @@ var third = closure();"#;
         let second_str = vm.get_string("second");
         let third_str = vm.get_string("third");
 
-        let value1 = vm.globals.get(first_str);
-        let value2 = vm.globals.get(second_str);
-        let value3 = vm.globals.get(third_str);
+        let value1 = vm.mem.globals.get(first_str);
+        let value2 = vm.mem.globals.get(second_str);
+        let value3 = vm.mem.globals.get(third_str);
 
         assert_eq!(value1, Some(Value::Number(2.0)));
         assert_eq!(value2, Some(Value::Number(2.0)));
@@ -127,7 +131,7 @@ var value = outer();"#;
         let mut vm = interpret(src).unwrap();
         let value_str = vm.get_string("value");
 
-        let value = vm.globals.get(value_str);
+        let value = vm.mem.globals.get(value_str);
 
         assert_eq!(value, Some(Value::Number(421.0)));
     }
@@ -146,7 +150,7 @@ fun outer() {
 outer();"#;
         let mut vm = interpret(src).unwrap();
         let result_str = vm.get_string("result");
-        let value = vm.globals.get(result_str);
+        let value = vm.mem.globals.get(result_str);
 
         assert_eq!(value, Some(Value::Number(420.0)));
     }
@@ -157,7 +161,7 @@ outer();"#;
         var num = __dummy();"#;
         let mut vm = interpret(src).unwrap();
         let num_str = vm.get_string("num");
-        let value = vm.globals.get(num_str);
+        let value = vm.mem.globals.get(num_str);
         assert_eq!(value, Some(Value::Number(420.0)));
     }
 
@@ -177,7 +181,7 @@ outer();"#;
         num = add420(num);"#;
         let mut vm = interpret(src).unwrap();
         let num_str = vm.get_string("num");
-        let value = vm.globals.get(num_str);
+        let value = vm.mem.globals.get(num_str);
         assert_eq!(value, Some(Value::Number(910.0)));
     }
 
@@ -201,7 +205,7 @@ outer();"#;
         let mut vm = interpret(src).unwrap();
 
         let noob = vm.get_string("noob");
-        let top = vm.globals.get(noob);
+        let top = vm.mem.globals.get(noob);
         assert_eq!(top.unwrap().as_str(), Some("NICE"));
     }
 
@@ -214,7 +218,7 @@ outer();"#;
         let mut vm = interpret(src).unwrap();
 
         let noob = vm.get_string("noob");
-        let top = vm.globals.get(noob);
+        let top = vm.mem.globals.get(noob);
         assert_eq!(top.unwrap().as_str(), Some("NICE"));
     }
 
@@ -229,7 +233,7 @@ outer();"#;
         let mut vm = interpret(src).unwrap();
 
         let noob = vm.get_string("noob");
-        let top = vm.globals.get(noob);
+        let top = vm.mem.globals.get(noob);
         assert_eq!(top, Some(Value::Number(10.0)));
     }
 
@@ -244,7 +248,7 @@ outer();"#;
         let _vm = interpret(src).unwrap();
 
         // let noob = vm.get_string("global");
-        // let top = vm.globals.get(noob);
+        // let top = vm.mem.globals.get(noob);
         // assert_eq!(top.unwrap().as_str(), Some("NICE"));
     }
 
@@ -257,7 +261,7 @@ outer();"#;
         let mut vm = interpret(src).unwrap();
 
         let noob = vm.get_string("global");
-        let top = vm.globals.get(noob);
+        let top = vm.mem.globals.get(noob);
         assert_eq!(top.unwrap().as_str(), Some("NICE"));
     }
 
@@ -267,7 +271,7 @@ outer();"#;
         let mut vm = interpret(src).unwrap();
 
         let noob = vm.get_string("noob");
-        let top = vm.globals.get(noob);
+        let top = vm.mem.globals.get(noob);
         assert_eq!(top.unwrap().as_str(), Some("hello sir sir"));
     }
 
@@ -279,22 +283,17 @@ outer();"#;
 
     #[test]
     fn table() {
+        let mut mem = Mem::new();
         let mut table = Table::new();
-        let mut interned_strings = Table::new();
-        let mut obj_list = Default::default();
 
-        let key = ObjString::copy_string(&mut interned_strings, &mut obj_list, "bagel");
+        let key = mem.copy_string("bagel");
         assert_eq!(table.set(key, Value::Number(420.0)), true);
         assert_eq!(table.set(key, Value::Number(69.0)), false);
         assert_eq!(table.get(key), Some(Value::Number(69.0)));
         assert_eq!(table.delete(key), true);
         assert_eq!(table.delete(key), false);
 
-        for obj in obj_list.iter_mut() {
-            Obj::free(*obj)
-        }
         Table::free(&mut table);
-        Table::free(&mut interned_strings);
     }
 
     #[test]

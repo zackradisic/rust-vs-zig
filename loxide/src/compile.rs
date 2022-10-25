@@ -5,6 +5,7 @@ use std::{
 
 use crate::{
     chunk::{Chunk, Opcode},
+    mem::Mem,
     obj::{ObjFunction, ObjList, ObjString},
     table::Table,
     value::Value,
@@ -136,20 +137,16 @@ impl<'src> Compiler<'src> {
     const UNINTIALIZED_LOCAL: MaybeUninit<Local<'src>> = MaybeUninit::uninit();
     const UNINTIALIZED_UPVALUE: MaybeUninit<Upvalue> = MaybeUninit::uninit();
 
-    pub fn new(
-        function_kind: FunctionKindT<Token>,
-        interned_strings: &mut Table,
-        obj_list: &mut ObjList,
-    ) -> Self {
+    pub fn new(function_kind: FunctionKindT<Token>, mem: &mut Mem) -> Self {
         let (function_name, function_kind) = match function_kind {
             FunctionKindT::Function(prev_tok) => (
-                ObjString::copy_string(interned_strings, obj_list, prev_tok.msg).as_ptr(),
+                mem.copy_string(prev_tok.msg).as_ptr(),
                 FunctionKind::Function,
             ),
             FunctionKindT::Script => (null_mut(), FunctionKind::Script),
         };
 
-        let function = ObjFunction::new(obj_list, function_name);
+        let function = unsafe { mem.alloc_obj(ObjFunction::new(function_name)) };
 
         let mut this = Self {
             enclosing: None,
@@ -288,8 +285,7 @@ impl<'src> Compiler<'src> {
 
 pub struct Parser<'a, 'src> {
     pub compiler: Box<Compiler<'src>>,
-    interned_strings: &'a mut Table,
-    obj_list: &'a mut ObjList,
+    mem: &'a mut Mem,
     scanner: Scanner<'src>,
 
     // probably a bad idea to make maybeuninit but 2 lazy rn
@@ -384,18 +380,13 @@ impl<'a, 'src: 'a> Parser<'a, 'src> {
         none_prec!(),
     ];
 
-    pub fn new(src: &'src str, interned_strings: &'a mut Table, obj_list: &'a mut ObjList) -> Self {
+    pub fn new(src: &'src str, mem: &'a mut Mem) -> Self {
         let scanner = Scanner::new(src);
-        let compiler = Box::new(Compiler::new(
-            FunctionKindT::Script,
-            interned_strings,
-            obj_list,
-        ));
+        let compiler = Box::new(Compiler::new(FunctionKindT::Script, mem));
 
         Self {
             compiler,
-            interned_strings,
-            obj_list,
+            mem,
             scanner,
             cur: MaybeUninit::uninit(),
             prev: MaybeUninit::uninit(),
@@ -539,11 +530,7 @@ impl<'a, 'src: 'a> Parser<'a, 'src> {
         let string = self.prev().msg;
 
         // get rid of the quotations
-        let obj_str = ObjString::copy_string(
-            self.interned_strings,
-            self.obj_list,
-            &string[1..string.len() - 1],
-        );
+        let obj_str = self.mem.copy_string(&string[1..string.len() - 1]);
 
         self.emit_constant(Value::Obj(obj_str.cast()));
     }
@@ -625,10 +612,8 @@ impl<'a, 'src: 'a> Parser<'a, 'src> {
             FunctionKind::Script => FunctionKindT::Script,
         };
 
-        let temp_compiler = std::mem::replace(
-            &mut self.compiler,
-            Box::new(Compiler::new(kindt, self.interned_strings, self.obj_list)),
-        );
+        let temp_compiler =
+            std::mem::replace(&mut self.compiler, Box::new(Compiler::new(kindt, self.mem)));
         self.compiler.enclosing = Some(temp_compiler);
 
         self.begin_scope();
@@ -789,9 +774,7 @@ impl<'a, 'src: 'a> Parser<'a, 'src> {
     }
 
     fn identifier_constant(&mut self, name: Token) -> u8 {
-        let constant = Value::Obj(
-            ObjString::copy_string(self.interned_strings, self.obj_list, name.msg).cast(),
-        );
+        let constant = Value::Obj(self.mem.copy_string(name.msg).cast());
         self.make_constant(constant)
     }
 
@@ -1053,6 +1036,10 @@ impl<'a, 'src: 'a> Parser<'a, 'src> {
         }
     }
 
+    /// This is badly named. This function is called if a return statement has no expression,
+    /// we emit nil to make the function implicitly return nil
+    ///
+    /// If the function has a return statement, that is handled in `self.return_statement()` function
     fn emit_return(&mut self) {
         self.emit_byte(Opcode::Nil as u8);
         self.emit_byte(Opcode::Return as u8)

@@ -1,6 +1,10 @@
 use std::ptr::{null_mut, NonNull};
 
-use crate::{obj::ObjString, value::Value};
+use crate::{
+    mem::Greystack,
+    obj::{Obj, ObjString},
+    value::Value,
+};
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct ObjHash(pub u32);
@@ -48,7 +52,38 @@ impl<'a> Iterator for TableIter<'a> {
 
             self.index += 1;
 
-            if !entry.is_uninitialized() {
+            // Skip uninitialized and tombstone entries
+            if !entry.key.is_null() {
+                return Some(entry);
+            }
+        }
+    }
+}
+
+pub struct TableIterMut<'a> {
+    table: &'a mut Table,
+    index: usize,
+}
+
+impl<'a> Iterator for TableIterMut<'a> {
+    type Item = &'a mut Entry;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.table.len == 0 {
+            return None;
+        }
+
+        loop {
+            if self.index >= self.table.cap as usize {
+                return None;
+            }
+
+            let entry = unsafe { self.table.entries.add(self.index).as_mut().unwrap() };
+
+            self.index += 1;
+
+            // Skip uninitialized and tombstone entries
+            if !entry.key.is_null() {
                 return Some(entry);
             }
         }
@@ -99,6 +134,13 @@ impl Table {
 
     pub fn iter(&self) -> TableIter {
         TableIter {
+            table: self,
+            index: 0,
+        }
+    }
+
+    pub fn iter_mut(&mut self) -> TableIterMut {
+        TableIterMut {
             table: self,
             index: 0,
         }
@@ -197,8 +239,7 @@ impl Table {
         }
 
         // place tombstone
-        entry.key = null_mut();
-        entry.value = Value::Bool(true);
+        entry.delete();
         true
     }
 
@@ -270,6 +311,7 @@ impl Table {
             unsafe {
                 let entry = entries.offset(index as isize);
                 if (*entry).key.is_null() {
+                    // It's a tombstone
                     if matches!((*entry).value, Value::Nil) {
                         return if !tombstone.is_null() {
                             tombstone
@@ -300,9 +342,43 @@ impl Table {
         table.cap = 0;
         table.entries = null_mut();
     }
+
+    pub fn mark(&self, greystack: &mut Greystack) {
+        for entry in self.iter() {
+            unsafe {
+                Obj::mark(entry.key.cast(), greystack);
+                entry.value.mark(greystack);
+            }
+        }
+    }
+
+    pub fn remove_white(&mut self) {
+        for entry in self.iter_mut() {
+            let is_marked = unsafe {
+                // Safety:
+                // TableIterMut skips over entries with null keys (unintialized and tombstoned entries)
+                !entry
+                    .key
+                    .cast::<Obj>()
+                    .as_ref()
+                    .unwrap_unchecked()
+                    .is_marked
+            };
+
+            if is_marked {
+                entry.delete();
+            }
+        }
+    }
 }
 
 impl Entry {
+    fn delete(&mut self) {
+        self.key = null_mut();
+        // place tombstone
+        self.value = Value::Bool(true);
+    }
+
     fn uninitialized() -> Self {
         Self {
             key: null_mut(),
@@ -312,5 +388,9 @@ impl Entry {
 
     fn is_uninitialized(&self) -> bool {
         self.key.is_null() && self.value.is_nil()
+    }
+
+    fn is_tombstone(&self) -> bool {
+        self.key.is_null() && matches!(self.value, Value::Bool(true))
     }
 }

@@ -4,7 +4,10 @@ use std::{
     ptr::NonNull,
 };
 
-use crate::obj::{Obj, ObjClosure, ObjFunction, ObjKind, ObjNative, ObjPtrWrapper, ObjString};
+use crate::{
+    mem::Greystack,
+    obj::{Obj, ObjClosure, ObjFunction, ObjKind, ObjNative, ObjPtrWrapper, ObjString},
+};
 
 pub type ValueArray = Vec<Value>;
 
@@ -18,6 +21,13 @@ pub enum Value {
 }
 
 impl Value {
+    pub fn mark(&self, greystack: &mut Greystack) {
+        match *self {
+            Value::Obj(obj) => unsafe { Obj::mark(obj.as_ptr(), greystack) },
+            _ => (),
+        }
+    }
+
     pub fn is_str(&self) -> bool {
         match *self {
             Value::Obj(obj) => unsafe { (*obj.as_ptr()).kind == ObjKind::Str },

@@ -1,5 +1,5 @@
 use std::{
-    alloc::{self, Layout},
+    alloc::{self, handle_alloc_error, Layout},
     borrow::Cow,
     mem::MaybeUninit,
     ptr::{self, addr_of_mut, null_mut, NonNull},
@@ -7,11 +7,17 @@ use std::{
 
 use crate::{
     chunk::{InstructionDebug, Opcode},
+    mem::{Greystack, Mem},
     native_fn::NativeFnKind,
-    obj::{Obj, ObjClosure, ObjFunction, ObjKind, ObjList, ObjNative, ObjString, ObjUpvalue},
+    obj::{
+        Obj, ObjClosure, ObjFunction, ObjKind, ObjList, ObjNative, ObjPunnable, ObjString,
+        ObjUpvalue,
+    },
     table::{ObjHash, Table},
     value::Value,
 };
+
+const GC_HEAP_GROW_FACTOR: usize = 2;
 
 pub type InterpretResult<T> = Result<T, InterpretError>;
 
@@ -61,16 +67,14 @@ pub struct VM {
     pub call_frames: [MaybeUninit<CallFrame>; FRAMES_MAX],
     pub call_frame_count: u32,
 
-    pub obj_list: ObjList,
-    pub globals: Table,
-    pub interned_strings: Table,
+    pub mem: Mem,
+    pub grey_stack: Greystack,
 }
 
 impl VM {
-    pub fn new(function: NonNull<ObjFunction>, mut obj_list: ObjList, strings: Table) -> Self {
-        // im pretty sure we might need to push/pop function here
-        // becuase of gc but will just wait until that chapter
-        let closure = ObjClosure::new(&mut obj_list, function);
+    pub fn new(mut mem: Mem, function: NonNull<ObjFunction>) -> Self {
+        let closure = mem.alloc_obj(ObjClosure::new(function));
+
         let mut call_frames = [MaybeUninit::uninit(); FRAMES_MAX];
         call_frames[0] = MaybeUninit::new(CallFrame {
             instr_offset: 0,
@@ -82,14 +86,13 @@ impl VM {
         stack[0] = MaybeUninit::new(Value::Obj(closure.cast()));
 
         let mut this = Self {
+            mem,
             open_upvalues: null_mut(),
-            obj_list,
-            globals: Table::new(),
-            interned_strings: strings,
             stack,
             stack_top: 1,
             call_frames,
             call_frame_count: 1,
+            grey_stack: vec![],
         };
 
         this.define_native("clock", NativeFnKind::Clock);
@@ -98,14 +101,164 @@ impl VM {
         this
     }
 
+    fn iter_stack(
+        &self,
+    ) -> std::iter::Map<
+        std::iter::Take<std::slice::Iter<MaybeUninit<Value>>>,
+        fn(&MaybeUninit<Value>) -> Value,
+    > {
+        self.stack
+            .iter()
+            .take(self.stack_top as usize)
+            .map(|val| unsafe { val.assume_init_read() })
+    }
+
+    fn iter_frames(
+        &self,
+    ) -> std::iter::Map<
+        std::iter::Take<std::slice::Iter<MaybeUninit<CallFrame>>>,
+        fn(&MaybeUninit<CallFrame>) -> CallFrame,
+    > {
+        self.call_frames
+            .iter()
+            .take(self.call_frame_count as usize)
+            .map(|val| unsafe { val.assume_init_read() })
+    }
+
+    fn trace_references(&mut self, greystack: &mut Greystack) {
+        loop {
+            if greystack.is_empty() {
+                break;
+            }
+
+            // Safety:
+            // We checked that the greystack is non-empty
+            let obj = unsafe { greystack.pop().unwrap_unchecked() };
+            unsafe { Obj::blacken(obj, greystack) };
+        }
+    }
+
+    fn sweep(&mut self) {
+        // Clear references to unmarked strings
+        self.mem.interned_strings.remove_white();
+
+        // Now free all unmarked objects
+        let mut i = 0;
+        loop {
+            let obj_ptr = match self.mem.obj_list.get(i) {
+                Some(obj) => *obj,
+                None => break,
+            };
+
+            if unsafe { obj_ptr.as_ref().is_marked } {
+                i += 1;
+                continue;
+            }
+
+            self.mem.obj_list.remove(i);
+            Obj::free(obj_ptr)
+        }
+    }
+
+    fn mark_roots(&mut self, greystack: &mut Greystack) {
+        for val in self.iter_stack() {
+            val.mark(greystack);
+        }
+
+        for frame in self.iter_frames() {
+            unsafe { Obj::mark(frame.closure.cast().as_ptr(), greystack) }
+        }
+
+        let mut upvalue = self.open_upvalues;
+        while !upvalue.is_null() {
+            unsafe {
+                Obj::mark(upvalue.cast(), greystack);
+                upvalue = (*upvalue).next;
+            }
+        }
+    }
+
+    fn collect_garbage(&mut self) {
+        #[cfg(feature = "debug_gc")]
+        println!("-- gc begin");
+        #[cfg(feature = "debug_gc")]
+        let before = self.mem.bytes_allocated();
+
+        let mut greystack = std::mem::replace(&mut self.grey_stack, vec![]);
+
+        self.mark_roots(&mut greystack);
+        self.trace_references(&mut greystack);
+        self.sweep();
+
+        self.mem.next_gc = self.mem.bytes_allocated() * GC_HEAP_GROW_FACTOR;
+
+        #[cfg(feature = "debug_gc")]
+        {
+            println!("-- gc end");
+            println!(
+                "   collected {} bytes (from {} to {}) next at {}",
+                before - self.mem.bytes_allocated(),
+                before,
+                self.mem.bytes_allocated(),
+                self.mem.next_gc
+            );
+        }
+    }
+
+    fn alloc_obj<T: ObjPunnable>(&mut self, obj: T) -> NonNull<T> {
+        if self.mem.bytes_allocated() + std::mem::size_of::<T>() > self.mem.next_gc {
+            self.collect_garbage();
+        }
+
+        self.mem.alloc_obj(obj)
+    }
+
+    fn alloc_obj_string(&mut self, obj_string: ObjString) -> NonNull<ObjString> {
+        let ptr = self.alloc_obj(obj_string);
+        self.mem.intern_string(ptr);
+        ptr
+    }
+
+    fn take_string(&mut self, chars: NonNull<u8>, len: u32) -> NonNull<ObjString> {
+        let hash = ObjHash::hash_string(unsafe {
+            std::str::from_utf8_unchecked(std::slice::from_raw_parts(chars.as_ptr(), len as usize))
+        });
+
+        match self.mem.interned_strings.find_string(
+            unsafe {
+                std::str::from_utf8_unchecked(std::slice::from_raw_parts(
+                    chars.as_ptr(),
+                    len as usize,
+                ))
+            },
+            hash,
+        ) {
+            Some(interned) => {
+                return interned;
+            }
+            None => (),
+        }
+
+        let obj_string = ObjString::new(chars, len, hash);
+        self.alloc_obj_string(obj_string)
+    }
+
+    #[cfg(debug_assertions)]
+    /// Only to be used for debugging purposes
     pub fn get_string(&mut self, string: &str) -> NonNull<ObjString> {
-        ObjString::copy_string(&mut self.interned_strings, &mut self.obj_list, string)
+        self.mem.copy_string(string)
     }
 
     #[inline]
     fn push(&mut self, val: Value) {
         self.stack[self.stack_top as usize] = MaybeUninit::new(val);
         self.stack_top += 1;
+    }
+
+    #[inline]
+    fn push2(&mut self, val: Value) {
+        // self.stack[self.stack_top as usize] = MaybeUninit::new(val);
+        // self.stack_top += 1;
     }
 
     #[inline]
@@ -182,32 +335,30 @@ impl VM {
         let new_len = a.len + b.len;
 
         let obj_str = if new_len == 0 {
-            ObjString::alloc_str(
-                &mut self.interned_strings,
-                &mut self.obj_list,
+            self.alloc_obj_string(ObjString::new(
                 NonNull::dangling(),
                 0,
                 ObjHash::EMPTY_STR_HASH,
-            )
+            ))
         } else {
             let layout = Layout::array::<u8>(new_len as usize).unwrap();
-            let chars = unsafe { alloc::alloc(layout) };
+            let chars = unsafe {
+                match NonNull::new(alloc::alloc(layout)) {
+                    Some(ptr) => ptr,
+                    None => handle_alloc_error(layout),
+                }
+            };
 
             unsafe {
-                ptr::copy_nonoverlapping(a.chars.as_ptr(), chars, a.len as usize);
+                ptr::copy_nonoverlapping(a.chars.as_ptr(), chars.as_ptr(), a.len as usize);
                 ptr::copy_nonoverlapping(
                     b.chars.as_ptr(),
-                    chars.offset(a.len as isize),
+                    chars.as_ptr().offset(a.len as isize),
                     b.len as usize,
                 );
             }
 
-            ObjString::take_string(
-                &mut self.interned_strings,
-                &mut self.obj_list,
-                chars,
-                new_len,
-            )
+            self.take_string(chars, new_len)
         };
 
         self.push(Value::Obj(obj_str.cast()))
@@ -233,17 +384,19 @@ impl VM {
     }
 
     fn define_native(&mut self, name: &str, native_fn_kind: NativeFnKind) {
-        let name = Value::Obj(
-            ObjString::copy_string(&mut self.interned_strings, &mut self.obj_list, name).cast(),
-        );
+        // We don't want/need to trigger GC here so directly call allocation
+        // functions on `self.mem`
 
-        let native_fn = Value::Obj(ObjNative::new(&mut self.obj_list, native_fn_kind).cast());
+        let name = Value::Obj(self.mem.copy_string(name).cast());
+
+        let native_fn =
+            Value::Obj(unsafe { self.mem.alloc_obj(ObjNative::new(native_fn_kind)).cast() });
 
         self.push(name);
         self.push(native_fn);
 
         unsafe {
-            self.globals.set(
+            self.mem.globals.set(
                 self.stack[self.stack_top as usize - 2]
                     .assume_init()
                     .as_obj_str_ptr()
@@ -285,6 +438,7 @@ impl VM {
 
     fn capture_upvalue(&mut self, offset: u8) -> NonNull<ObjUpvalue> {
         let slot = self.top_call_frame().slots_offset;
+
         let local = NonNull::new(self.stack[slot as usize + offset as usize].as_mut_ptr()).unwrap();
 
         unsafe {
@@ -305,9 +459,10 @@ impl VM {
                 _ => (),
             }
 
-            let created_upvalue = ObjUpvalue::new(&mut self.obj_list, local);
-            (*created_upvalue.as_ptr()).next = upvalue;
-
+            let created_upvalue = ObjUpvalue::new(local, upvalue);
+            // TODO: FIX
+            // let created_upvalue = self.mem.alloc_obj(created_upvalue);
+            let created_upvalue = self.alloc_obj(created_upvalue);
             if prev_upvalue.is_null() {
                 self.open_upvalues = created_upvalue.as_ptr();
             } else {
@@ -425,9 +580,15 @@ impl VM {
                 }
                 Some(Opcode::Closure) => {
                     let function = self.read_constant().as_fn_ptr().unwrap();
-                    let closure = ObjClosure::new(&mut self.obj_list, function);
+                    let closure = self.alloc_obj(ObjClosure::new(function));
+
                     self.read_closure_upvalues(closure);
-                    self.push(Value::Obj(closure.cast()));
+                    self.push(Value::Obj(closure.cast()))
+                    // TODO: investigate
+                    // let closure = self.alloc_obj();
+                    // let noob = Value::Obj(closure.cast());
+                    // println!("did the closure thing");
+                    // self.push(noob);
                 }
                 Some(Opcode::Call) => {
                     let arg_count = self.read_byte();
@@ -470,10 +631,10 @@ impl VM {
                         .expect("Expect string constant for global variable name.");
 
                     let new_val = self.peek(0);
-                    println!("{} = {:?}", unsafe { name.as_ref() }.as_str(), self.peek(0));
+                    // println!("{} = {:?}", unsafe { name.as_ref() }.as_str(), self.peek(0));
 
-                    if self.globals.set(name, new_val) {
-                        self.globals.delete(name);
+                    if self.mem.globals.set(name, new_val) {
+                        self.mem.globals.delete(name);
                         self.runtime_error(
                             format!("Undefined variable: {}", unsafe { name.as_ref().as_str() })
                                 .into(),
@@ -488,7 +649,7 @@ impl VM {
                         .as_obj_str_ptr()
                         .expect("Expect string constant for global variable name.");
 
-                    let val = match self.globals.get(name) {
+                    let val = match self.mem.globals.get(name) {
                         Some(global) => global,
                         None => {
                             self.runtime_error(
@@ -510,7 +671,7 @@ impl VM {
                         .as_obj_str_ptr()
                         .expect("Expect string constant for global variable name.");
 
-                    self.globals.set(name, self.peek(0));
+                    self.mem.globals.set(name, self.peek(0));
                     self.pop();
                 }
                 Some(Opcode::Nil) => {
@@ -613,7 +774,7 @@ impl VM {
         unsafe { self.call_frames[self.call_frame_count as usize - 1].assume_init_mut() }
     }
     #[inline]
-    fn top_call_frame(&mut self) -> &CallFrame {
+    fn top_call_frame(&self) -> &CallFrame {
         unsafe { self.call_frames[self.call_frame_count as usize - 1].assume_init_ref() }
     }
 
@@ -635,19 +796,5 @@ impl VM {
     fn read_constant(&mut self) -> Value {
         let idx = self.read_byte();
         self.top_call_frame().function().chunk.constants[idx as usize]
-    }
-
-    fn free_objects(&mut self) {
-        for obj in self.obj_list.iter_mut() {
-            Obj::free(*obj)
-        }
-    }
-}
-
-impl Drop for VM {
-    fn drop(&mut self) {
-        self.free_objects();
-        Table::free(&mut self.interned_strings);
-        Table::free(&mut self.globals);
     }
 }

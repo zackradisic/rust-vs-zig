@@ -1,19 +1,49 @@
 use std::{
     alloc::{self, Layout},
-    collections::LinkedList,
-    mem,
-    ptr::{self, addr_of_mut, null_mut, NonNull},
+    collections::{LinkedList, VecDeque},
+    ptr::{self, addr_of_mut, NonNull},
     slice,
 };
 
-use crate::{
-    chunk::Chunk,
-    native_fn::NativeFnKind,
-    table::{ObjHash, Table},
-    value::Value,
-};
+use crate::{chunk::Chunk, mem::Greystack, native_fn::NativeFnKind, table::ObjHash, value::Value};
 
-pub type ObjList = LinkedList<NonNull<Obj>>;
+pub type ObjList = VecDeque<NonNull<Obj>>;
+
+/// This is to enable type-safe functions generic over types that are type punnable to Obj
+pub trait ObjPunnable: Sized {
+    fn kind(&self) -> ObjKind;
+}
+
+impl ObjPunnable for Obj {
+    fn kind(&self) -> ObjKind {
+        self.kind
+    }
+}
+impl ObjPunnable for ObjNative {
+    fn kind(&self) -> ObjKind {
+        ObjKind::Native
+    }
+}
+impl ObjPunnable for ObjUpvalue {
+    fn kind(&self) -> ObjKind {
+        ObjKind::Upvalue
+    }
+}
+impl ObjPunnable for ObjFunction {
+    fn kind(&self) -> ObjKind {
+        ObjKind::Fn
+    }
+}
+impl ObjPunnable for ObjClosure {
+    fn kind(&self) -> ObjKind {
+        ObjKind::Closure
+    }
+}
+impl ObjPunnable for ObjString {
+    fn kind(&self) -> ObjKind {
+        ObjKind::Str
+    }
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -28,6 +58,7 @@ pub enum ObjKind {
 #[repr(C)]
 pub struct Obj {
     pub kind: ObjKind,
+    pub is_marked: bool,
 }
 
 pub struct ObjPtrWrapper(pub *mut Obj);
@@ -73,28 +104,66 @@ pub struct ObjString {
 }
 
 impl Obj {
-    /// Safety:
-    /// T must be type-punnable from T <-> Obj
-    unsafe fn alloc<T>(obj_list: &mut ObjList, kind: ObjKind) -> NonNull<T> {
-        let layout = Layout::from_size_align(mem::size_of::<T>(), mem::align_of::<T>()).unwrap();
-        let obj = NonNull::new(alloc::alloc(layout) as *mut Obj).expect("Heap allocation failed.");
+    pub unsafe fn blacken(obj: NonNull<Obj>, greystack: &mut Greystack) {
+        #[cfg(feature = "debug_gc")]
+        println!("{:?} blacken {:?}", obj.as_ptr(), Value::Obj(obj));
 
-        (*obj.as_ptr()).kind = kind;
-
-        obj_list.push_front(obj);
-
-        obj.cast()
+        let kind = obj.as_ref().kind;
+        match kind {
+            ObjKind::Fn => {
+                let function = obj.cast::<ObjFunction>().as_ref();
+                Obj::mark(function.name.cast(), greystack);
+                for val in function.chunk.constants.iter() {
+                    val.mark(greystack)
+                }
+            }
+            ObjKind::Closure => {
+                let closure = obj.cast::<ObjClosure>().as_ref();
+                Obj::mark(closure.function.as_ptr().cast(), greystack);
+                let upvalue_slice = std::slice::from_raw_parts(
+                    closure.upvalues.as_ptr(),
+                    closure.upvalue_count as usize,
+                );
+                for obj in upvalue_slice {
+                    Obj::mark(obj.cast(), greystack);
+                }
+            }
+            ObjKind::Upvalue => obj.cast::<ObjUpvalue>().as_ref().closed.mark(greystack),
+            ObjKind::Native | ObjKind::Str => (),
+        }
     }
 
-    unsafe fn dealloc<T>(obj: *mut Obj) {
-        let layout = Layout::from_size_align(mem::size_of::<T>(), mem::align_of::<T>()).unwrap();
-        alloc::dealloc(obj as *mut u8, layout)
+    pub unsafe fn mark(obj: *mut Obj, greystack: &mut Greystack) {
+        if obj.is_null() {
+            return;
+        }
+
+        if obj.as_ref().unwrap_unchecked().is_marked {
+            return;
+        }
+
+        #[cfg(feature = "debug_gc")]
+        println!(
+            "{:?} mark {:?}",
+            obj,
+            Value::Obj(NonNull::new(obj).unwrap())
+        );
+
+        // let kind = (*obj).kind;
+        (*obj).is_marked = true;
+
+        // Safety:
+        // We checked that obj is non null above
+        greystack.push(unsafe { NonNull::new_unchecked(obj.cast()) });
     }
 
     pub fn free(obj: NonNull<Obj>) {
         unsafe {
             let obj = obj.as_ptr();
             let kind = (*obj).kind;
+
+            #[cfg(feature = "debug_gc")]
+            println!("{:?} free type {:?}", obj, kind);
 
             match kind {
                 ObjKind::Str => {
@@ -109,23 +178,20 @@ impl Obj {
                         alloc::dealloc((*obj_str).chars.as_ptr(), layout);
                     }
 
-                    Self::dealloc::<ObjString>(obj)
+                    let _ = Box::from_raw(obj as *mut ObjString);
                 }
                 ObjKind::Fn => {
-                    // `name` will be freed by string table
-                    // just need to free `chunk`
-                    let _chunk = ptr::read(addr_of_mut!((*obj.cast::<ObjFunction>()).chunk));
-
-                    Self::dealloc::<ObjFunction>(obj)
+                    let _ = Box::from_raw(obj as *mut ObjFunction);
                 }
-                ObjKind::Native => Self::dealloc::<ObjNative>(obj),
-                ObjKind::Closure => Self::dealloc::<ObjClosure>(obj),
-                ObjKind::Upvalue => {
+                ObjKind::Native => {
+                    let _ = Box::from_raw(obj as *mut ObjNative);
+                }
+                ObjKind::Closure => {
                     let upvalues = (*obj.cast::<ObjClosure>()).upvalues;
                     let upvalues_count = (*obj.cast::<ObjClosure>()).upvalue_count;
 
                     if upvalues_count != 0 {
-                        // drop upvalues
+                        // drop upvalues array
                         let _upvalues = Vec::from_raw_parts(
                             upvalues.as_ptr(),
                             upvalues_count as usize,
@@ -133,7 +199,10 @@ impl Obj {
                         );
                     }
 
-                    Self::dealloc::<ObjUpvalue>(obj);
+                    let _ = Box::from_raw(obj as *mut ObjClosure);
+                }
+                ObjKind::Upvalue => {
+                    let _ = Box::from_raw(obj as *mut ObjUpvalue);
                 }
             }
         }
@@ -193,40 +262,34 @@ impl std::fmt::Debug for ObjPtrWrapper {
 }
 
 impl ObjNative {
-    pub fn new(obj_list: &mut ObjList, kind: NativeFnKind) -> NonNull<ObjNative> {
-        let obj_native: NonNull<ObjNative> = unsafe { Obj::alloc(obj_list, ObjKind::Native) };
-
-        unsafe {
-            (*obj_native.as_ptr()).function = kind;
+    pub fn new(kind: NativeFnKind) -> Self {
+        Self {
+            obj: Obj {
+                kind: ObjKind::Native,
+                is_marked: false,
+            },
+            function: kind,
         }
-
-        obj_native
     }
 }
 
 impl ObjUpvalue {
-    pub fn new(obj_list: &mut ObjList, location: NonNull<Value>) -> NonNull<ObjUpvalue> {
-        let obj_upvalue: NonNull<ObjUpvalue> = unsafe { Obj::alloc(obj_list, ObjKind::Upvalue) };
-        unsafe {
-            let ptr = obj_upvalue.as_ptr();
-            (*ptr).location = location;
-            (*ptr).next = null_mut();
-            (*ptr).closed = Value::Nil;
+    pub fn new(location: NonNull<Value>, next: *mut ObjUpvalue) -> Self {
+        Self {
+            obj: Obj {
+                kind: ObjKind::Upvalue,
+                is_marked: false,
+            },
+            location,
+            next,
+            closed: Value::Nil,
         }
-
-        obj_upvalue
     }
-
-    // pub fn upvalue_at_slot(&self, slot: usize) -> Option<NonNull<ObjUpvalue>> {
-    //     if self.upv
-    // }
 }
 
 impl ObjClosure {
-    pub fn new(obj_list: &mut ObjList, function: NonNull<ObjFunction>) -> NonNull<ObjClosure> {
-        unsafe {
-            let obj_closure: NonNull<ObjClosure> = Obj::alloc(obj_list, ObjKind::Closure);
-
+    pub fn new(function: NonNull<ObjFunction>) -> Self {
+        let (upvalues, upvalue_count) = unsafe {
             let upvalue_count = (*function.as_ptr()).upvalue_count;
             let upvalues = if upvalue_count == 0 {
                 NonNull::dangling()
@@ -235,11 +298,17 @@ impl ObjClosure {
                 NonNull::new(alloc::alloc_zeroed(layout)).unwrap().cast()
             };
 
-            (*obj_closure.as_ptr()).function = function;
-            (*obj_closure.as_ptr()).upvalue_count = upvalue_count;
-            (*obj_closure.as_ptr()).upvalues = upvalues;
+            (upvalues, upvalue_count)
+        };
 
-            obj_closure
+        Self {
+            obj: Obj {
+                kind: ObjKind::Closure,
+                is_marked: false,
+            },
+            function,
+            upvalues,
+            upvalue_count,
         }
     }
 
@@ -257,17 +326,17 @@ impl ObjClosure {
 }
 
 impl ObjFunction {
-    pub fn new(obj_list: &mut ObjList, name: *mut ObjString) -> NonNull<ObjFunction> {
-        let obj_fn = unsafe { Obj::alloc::<ObjFunction>(obj_list, ObjKind::Fn) };
-
-        unsafe {
-            (*obj_fn.as_ptr()).arity = 0;
-            (*obj_fn.as_ptr()).name = name;
-            (*obj_fn.as_ptr()).upvalue_count = 0;
-            addr_of_mut!((*obj_fn.as_ptr()).chunk).write(Chunk::new());
+    pub fn new(name: *mut ObjString) -> Self {
+        Self {
+            obj: Obj {
+                kind: ObjKind::Fn,
+                is_marked: false,
+            },
+            arity: 0,
+            chunk: Chunk::new(),
+            name,
+            upvalue_count: 0,
         }
-
-        obj_fn
     }
 }
 
@@ -279,88 +348,15 @@ impl ObjString {
         }
     }
 
-    pub fn take_string(
-        interned_strings: &mut Table,
-        obj_list: &mut ObjList,
-        chars: *mut u8,
-        len: u32,
-    ) -> NonNull<ObjString> {
-        let hash = ObjHash::hash_string(unsafe {
-            std::str::from_utf8_unchecked(std::slice::from_raw_parts(chars, len as usize))
-        });
-
-        match interned_strings.find_string(
-            unsafe {
-                std::str::from_utf8_unchecked(std::slice::from_raw_parts(chars, len as usize))
+    pub fn new(chars: NonNull<u8>, len: u32, hash: ObjHash) -> ObjString {
+        Self {
+            obj: Obj {
+                kind: ObjKind::Str,
+                is_marked: false,
             },
-            hash,
-        ) {
-            Some(interned) => {
-                return interned;
-            }
-            None => (),
-        }
-
-        Self::alloc_str(
-            interned_strings,
-            obj_list,
-            unsafe { NonNull::new_unchecked(chars) },
             len,
             hash,
-        )
-    }
-
-    pub fn copy_string(
-        interned_strings: &mut Table,
-        obj_list: &mut ObjList,
-        string: &str,
-    ) -> NonNull<ObjString> {
-        let hash = ObjHash::hash_string(string);
-        match interned_strings.find_string(string, hash) {
-            Some(interned) => return interned,
-            None => (),
-        };
-
-        // Allocating layout for zero length data is not allowed
-        if string.is_empty() {
-            return Self::alloc_str(interned_strings, obj_list, NonNull::dangling(), 0, hash);
+            chars,
         }
-
-        let layout = Layout::for_value(string.as_bytes());
-        let chars = unsafe { alloc::alloc(layout) };
-        unsafe {
-            ptr::copy_nonoverlapping(string.as_ptr(), chars, string.len());
-        }
-
-        Self::alloc_str(
-            interned_strings,
-            obj_list,
-            unsafe { NonNull::new_unchecked(chars) },
-            string.len() as u32,
-            hash,
-        )
-    }
-
-    pub fn alloc_str(
-        interned_strings: &mut Table,
-        obj_list: &mut ObjList,
-        chars: NonNull<u8>,
-        len: u32,
-        hash: ObjHash,
-    ) -> NonNull<ObjString> {
-        // Safety:
-        // This is safe because ObjString <-> Obj
-        let ptr = unsafe { Obj::alloc::<ObjString>(obj_list, ObjKind::Str) };
-
-        unsafe {
-            let ptr = ptr.as_ptr();
-            (*ptr).len = len;
-            (*ptr).chars = chars;
-            (*ptr).hash = hash;
-        }
-
-        interned_strings.set(ptr, Value::Nil);
-
-        ptr
     }
 }
