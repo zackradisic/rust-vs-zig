@@ -157,13 +157,18 @@ impl Obj {
         greystack.push(unsafe { NonNull::new_unchecked(obj.cast()) });
     }
 
-    pub fn free(obj: NonNull<Obj>) {
+    pub fn free(obj_nonnull: NonNull<Obj>) {
         unsafe {
-            let obj = obj.as_ptr();
+            let obj = obj_nonnull.as_ptr();
             let kind = (*obj).kind;
 
             #[cfg(feature = "debug_gc")]
-            println!("{:?} free type {:?}", obj, kind);
+            println!(
+                "{:?} free type {:?} ({:?})",
+                obj,
+                kind,
+                Value::Obj(obj_nonnull)
+            );
 
             match kind {
                 ObjKind::Str => {

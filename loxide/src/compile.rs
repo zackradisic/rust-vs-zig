@@ -660,14 +660,8 @@ impl<'a, 'src: 'a> Parser<'a, 'src> {
                 .map(|obj| obj.as_str())
                 .unwrap_or("top_level")
         };
-        println!("{:?} {:?}", func_name, upvalue_count);
         for i in 0..upvalue_count {
             let upvalue = unsafe { temp_compiler.upvalues[i as usize].assume_init() };
-            println!(
-                "upvalues: {:?} {:?}",
-                if upvalue.is_local { 1 } else { 0 },
-                upvalue.index
-            );
             self.emit_byte(if upvalue.is_local { 1 } else { 0 });
             self.emit_byte(upvalue.index);
         }
