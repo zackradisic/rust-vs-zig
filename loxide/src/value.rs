@@ -6,7 +6,10 @@ use std::{
 
 use crate::{
     mem::Greystack,
-    obj::{Obj, ObjClosure, ObjFunction, ObjKind, ObjNative, ObjPtrWrapper, ObjString},
+    obj::{
+        Obj, ObjClass, ObjClosure, ObjFunction, ObjInstance, ObjKind, ObjNative, ObjPtrWrapper,
+        ObjString,
+    },
 };
 
 pub type ValueArray = Vec<Value>;
@@ -46,6 +49,62 @@ impl Value {
         match self {
             Value::Obj(obj) => unsafe { (*obj.as_ptr()).kind == ObjKind::Native },
             _ => false,
+        }
+    }
+
+    pub fn as_instance_ptr(&self) -> Option<NonNull<ObjInstance>> {
+        match self {
+            Value::Obj(obj) if unsafe { (*obj.as_ptr()).kind == ObjKind::Instance } => {
+                Some(obj.cast())
+            }
+            _ => None,
+        }
+    }
+
+    pub fn as_instance_fn_mut(&mut self) -> Option<&mut ObjInstance> {
+        match *self {
+            Value::Obj(obj) => unsafe {
+                let kind = (*obj.as_ptr()).kind;
+                match kind {
+                    ObjKind::Instance => Some(obj.cast().as_mut()),
+                    _ => None,
+                }
+            },
+            _ => None,
+        }
+    }
+    pub fn as_instance_fn(&self) -> Option<&ObjInstance> {
+        match *self {
+            Value::Obj(obj) => unsafe {
+                let kind = (*obj.as_ptr()).kind;
+                match kind {
+                    ObjKind::Instance => Some(obj.cast().as_ref()),
+                    _ => None,
+                }
+            },
+            _ => None,
+        }
+    }
+
+    pub fn as_class_ptr(&self) -> Option<NonNull<ObjClass>> {
+        match self {
+            Value::Obj(obj) if unsafe { (*obj.as_ptr()).kind == ObjKind::Class } => {
+                Some(obj.cast())
+            }
+            _ => None,
+        }
+    }
+
+    pub fn as_class_fn(&self) -> Option<&ObjClass> {
+        match *self {
+            Value::Obj(obj) => unsafe {
+                let kind = (*obj.as_ptr()).kind;
+                match kind {
+                    ObjKind::Class => Some(obj.cast().as_ref()),
+                    _ => None,
+                }
+            },
+            _ => None,
         }
     }
 

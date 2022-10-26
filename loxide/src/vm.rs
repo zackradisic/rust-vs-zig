@@ -9,7 +9,10 @@ use crate::{
     chunk::{InstructionDebug, Opcode},
     mem::{Greystack, Mem},
     native_fn::NativeFnKind,
-    obj::{Obj, ObjClosure, ObjFunction, ObjKind, ObjNative, ObjPunnable, ObjString, ObjUpvalue},
+    obj::{
+        Obj, ObjClass, ObjClosure, ObjFunction, ObjInstance, ObjKind, ObjNative, ObjPunnable,
+        ObjString, ObjUpvalue,
+    },
     table::ObjHash,
     value::Value,
 };
@@ -415,6 +418,13 @@ impl<'b> VM<'b> {
             Value::Obj(obj) => {
                 let kind = unsafe { obj.as_ref().kind };
                 match kind {
+                    ObjKind::Class => {
+                        let class: NonNull<ObjClass> = obj.cast();
+                        let instance = self.alloc_obj(ObjInstance::new(class));
+                        self.stack[self.stack_top as usize - arg_count as usize - 1] =
+                            MaybeUninit::new(Value::Obj(instance.cast()));
+                        return true;
+                    }
                     ObjKind::Closure => return self.call(obj.cast(), arg_count),
                     ObjKind::Native => {
                         let native: NonNull<ObjNative> = obj.cast();
@@ -440,12 +450,7 @@ impl<'b> VM<'b> {
     fn capture_upvalue(&mut self, offset: u8) -> NonNull<ObjUpvalue> {
         let slot = self.top_call_frame().slots_offset;
 
-        // let local = NonNull::new(unsafe {
-        //     std::mem::transmute(self.stack.get().offset(slot as isize + offset as isize))
-        // })
-        // .unwrap();
         let local = NonNull::new(self.stack[slot as usize + offset as usize].as_mut_ptr()).unwrap();
-        // let local = NonNull::new(self.stack[slot as usize + offset as usize].as_mut_ptr()).unwrap();
 
         unsafe {
             let mut prev_upvalue: *mut ObjUpvalue = null_mut();
@@ -549,6 +554,69 @@ impl<'b> VM<'b> {
             let byte = self.read_byte();
 
             match Opcode::from_u8(byte) {
+                Some(Opcode::GetProperty) => {
+                    let top = self.peek(0);
+                    let instance = match top.as_instance_fn() {
+                        Some(instance) => instance,
+                        None => {
+                            self.runtime_error("Only instances have properties.".into());
+                            return Err(InterpretError::RuntimeError);
+                        }
+                    };
+
+                    let name = self
+                        .read_constant()
+                        .as_obj_str_ptr()
+                        .expect("Expect to read a string constant.");
+
+                    match instance.fields.get(name) {
+                        Some(val) => {
+                            self.pop();
+                            self.push(val);
+                        }
+                        None => {
+                            self.runtime_error(
+                                format!("Undefined property {:?}", unsafe {
+                                    name.as_ref().as_str()
+                                })
+                                .into(),
+                            );
+                            return Err(InterpretError::RuntimeError);
+                        }
+                    }
+                }
+                Some(Opcode::SetProperty) => {
+                    let mut top = self.peek(1);
+                    let instance = match top.as_instance_fn_mut() {
+                        Some(instance) => instance,
+                        None => {
+                            self.runtime_error("Only instances have fields.".into());
+                            return Err(InterpretError::RuntimeError);
+                        }
+                    };
+
+                    let field_name = self
+                        .read_constant()
+                        .as_obj_str_ptr()
+                        .expect("Expect to string constant");
+
+                    instance.fields.set(field_name, self.peek(0));
+
+                    let value = self.pop();
+                    self.pop();
+                    self.push(value);
+                }
+                Some(Opcode::Class) => {
+                    let name = self
+                        .read_constant()
+                        .as_obj_str_ptr()
+                        .expect("Opcode::Class instruction should be followed by string constant");
+
+                    let class = ObjClass::new(name);
+                    let class = self.alloc_obj(class);
+
+                    self.push(Value::Obj(class.cast()));
+                }
                 Some(Opcode::CloseUpvalue) => {
                     self.close_upvalues(self.stack_top - 1);
                     self.pop();

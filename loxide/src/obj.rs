@@ -5,7 +5,13 @@ use std::{
     slice,
 };
 
-use crate::{chunk::Chunk, mem::Greystack, native_fn::NativeFnKind, table::ObjHash, value::Value};
+use crate::{
+    chunk::Chunk,
+    mem::Greystack,
+    native_fn::NativeFnKind,
+    table::{ObjHash, Table},
+    value::Value,
+};
 
 pub type ObjList = VecDeque<NonNull<Obj>>;
 
@@ -44,6 +50,16 @@ impl ObjPunnable for ObjString {
         ObjKind::Str
     }
 }
+impl ObjPunnable for ObjClass {
+    fn kind(&self) -> ObjKind {
+        ObjKind::Class
+    }
+}
+impl ObjPunnable for ObjInstance {
+    fn kind(&self) -> ObjKind {
+        ObjKind::Instance
+    }
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -53,6 +69,8 @@ pub enum ObjKind {
     Native,
     Closure,
     Upvalue,
+    Class,
+    Instance,
 }
 
 #[repr(C)]
@@ -84,6 +102,19 @@ pub struct ObjClosure {
     pub function: NonNull<ObjFunction>,
     pub upvalues: NonNull<*mut ObjUpvalue>,
     pub upvalue_count: u8,
+}
+
+#[repr(C)]
+pub struct ObjClass {
+    pub obj: Obj,
+    pub name: NonNull<ObjString>,
+}
+
+#[repr(C)]
+pub struct ObjInstance {
+    pub obj: Obj,
+    pub class: NonNull<ObjClass>,
+    pub fields: Table,
 }
 
 #[repr(C)]
@@ -130,6 +161,17 @@ impl Obj {
             }
             ObjKind::Upvalue => obj.cast::<ObjUpvalue>().as_ref().closed.mark(greystack),
             ObjKind::Native | ObjKind::Str => (),
+            ObjKind::Class => {
+                Obj::mark(
+                    obj.cast::<ObjClass>().as_ref().name.cast().as_ptr(),
+                    greystack,
+                );
+            }
+            ObjKind::Instance => unsafe {
+                let instance_ptr = obj.cast::<ObjInstance>().as_ptr();
+                Obj::mark((*instance_ptr).class.as_ptr() as *mut _, greystack);
+                (*instance_ptr).fields.mark(greystack);
+            },
         }
     }
 
@@ -209,6 +251,14 @@ impl Obj {
                 ObjKind::Upvalue => {
                     let _ = Box::from_raw(obj as *mut ObjUpvalue);
                 }
+                ObjKind::Class => {
+                    let _ = Box::from_raw(obj as *mut ObjClass);
+                }
+                ObjKind::Instance => {
+                    Table::free(&mut (*(obj as *mut ObjInstance)).fields);
+
+                    let _ = Box::from_raw(obj as *mut ObjInstance);
+                }
             }
         }
     }
@@ -260,6 +310,24 @@ impl std::fmt::Debug for ObjPtrWrapper {
 
                 f.debug_struct("ObjUpvalue")
                     .field("location", &(loc_ptr, loc))
+                    .finish()
+            },
+            ObjKind::Class => unsafe {
+                f.debug_struct("Class")
+                    .field(
+                        "name",
+                        &ObjPtrWrapper(ptr.cast::<ObjClass>().as_ref().name.cast::<Obj>().as_ptr()),
+                    )
+                    .finish()
+            },
+            ObjKind::Instance => unsafe {
+                let instance = ptr.cast::<ObjInstance>().as_ref();
+                f.debug_struct("Instance")
+                    .field(
+                        "class",
+                        &ObjPtrWrapper(instance.class.cast::<Obj>().as_ptr()),
+                    )
+                    .field("fields", &instance.fields)
                     .finish()
             },
         }
@@ -326,6 +394,31 @@ impl ObjClosure {
             let upvalues =
                 slice::from_raw_parts(self.upvalues.as_ptr(), self.upvalue_count as usize);
             upvalues.get(slot).and_then(|upval| NonNull::new(*upval))
+        }
+    }
+}
+
+impl ObjClass {
+    pub fn new(name: NonNull<ObjString>) -> Self {
+        Self {
+            obj: Obj {
+                kind: ObjKind::Class,
+                is_marked: false,
+            },
+            name,
+        }
+    }
+}
+
+impl ObjInstance {
+    pub fn new(class: NonNull<ObjClass>) -> Self {
+        Self {
+            obj: Obj {
+                kind: ObjKind::Instance,
+                is_marked: false,
+            },
+            class,
+            fields: Table::new(),
         }
     }
 }

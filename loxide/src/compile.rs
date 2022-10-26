@@ -308,7 +308,7 @@ impl<'a, 'src: 'a> Parser<'a, 'src> {
         // comma
         none_prec!(),
         // dot
-        none_prec!(),
+        parse_rule!(inf = Parser::dot, Precedence::Call),
         // minus
         parse_rule!(pre = Parser::unary, inf = Parser::binary, Precedence::Term),
         // plus
@@ -481,7 +481,9 @@ impl<'a, 'src: 'a> Parser<'a, 'src> {
     }
 
     fn declaration(&mut self) {
-        if self.match_tok(TokenKind::Fun) {
+        if self.match_tok(TokenKind::Class) {
+            self.class_declaration()
+        } else if self.match_tok(TokenKind::Fun) {
             self.fn_declaration();
         } else if self.match_tok(TokenKind::Var) {
             self.var_declaration();
@@ -494,8 +496,20 @@ impl<'a, 'src: 'a> Parser<'a, 'src> {
         }
     }
 
+    fn class_declaration(&mut self) {
+        self.consume(TokenKind::Identifier, "Expect class name.");
+        let name_constant = self.identifier_constant(self.prev());
+        self.declare_variable();
+
+        self.emit_bytes(Opcode::Class as u8, name_constant);
+        self.define_variable(name_constant);
+
+        self.consume(TokenKind::LeftBrace, "Expect '{' before class body.");
+        self.consume(TokenKind::RightBrace, "Expect '}' after class body.");
+    }
+
     fn fn_declaration(&mut self) {
-        let global = self.parse_variable("Expect function name");
+        let global = self.parse_variable("Expect function name.");
         self.mark_initialized();
         self.function(FunctionKind::Function);
         self.define_variable(global);
@@ -571,6 +585,18 @@ impl<'a, 'src: 'a> Parser<'a, 'src> {
         self.consume(TokenKind::RightParen, "Expect ')' after arguments.");
 
         arg_count
+    }
+
+    fn dot(&mut self, ctx: ParseRuleCtx) {
+        self.consume(TokenKind::Identifier, "Expect property name after '.'.");
+        let name = self.identifier_constant(self.prev());
+
+        if ctx.can_assign && self.match_tok(TokenKind::Equal) {
+            self.expression();
+            self.emit_bytes(Opcode::SetProperty as u8, name);
+        } else {
+            self.emit_bytes(Opcode::GetProperty as u8, name);
+        }
     }
 
     fn unary(&mut self, _ctx: ParseRuleCtx) {

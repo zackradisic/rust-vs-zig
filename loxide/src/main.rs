@@ -74,7 +74,7 @@ fn interpret<'a>(stack: &'a mut ValueStack, src: &str) -> InterpretResult<VM<'a>
 #[cfg(test)]
 mod test {
 
-    use std::mem::MaybeUninit;
+    use std::{cell::UnsafeCell, mem::MaybeUninit};
 
     use crate::{
         compile::Token,
@@ -84,6 +84,25 @@ mod test {
         value::Value,
         vm::{ValueStack, STACK_MAX},
     };
+
+    #[test]
+    fn instance_get_set() {
+        let src = r#"
+class Pair {}
+
+var pair = Pair();
+pair.first = 1;
+pair.second = 2;
+var result = pair.first + pair.second;"#;
+        let mut stack: ValueStack = [MaybeUninit::uninit(); STACK_MAX];
+        let mut vm = interpret(&mut stack, src).unwrap();
+
+        let result_str = vm.get_string("result");
+
+        let value = vm.mem.globals.get(result_str);
+
+        assert_eq!(value, Some(Value::Number(3.0)));
+    }
 
     #[test]
     fn upvalue_closed() {

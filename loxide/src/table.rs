@@ -103,6 +103,16 @@ pub struct Entry {
     pub value: Value,
 }
 
+impl std::fmt::Debug for Table {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Table")
+            .field("len", &self.len)
+            .field("cap", &self.cap)
+            .field("entries", &self.entries)
+            .finish()
+    }
+}
+
 impl std::fmt::Debug for Entry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         unsafe {

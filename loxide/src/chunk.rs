@@ -36,6 +36,9 @@ pub enum Opcode {
     GetUpvalue,
     SetUpvalue,
     CloseUpvalue,
+    Class,
+    GetProperty,
+    SetProperty,
 }
 
 impl Opcode {
@@ -71,6 +74,9 @@ impl Opcode {
             26 => Some(GetUpvalue),
             27 => Some(SetUpvalue),
             28 => Some(CloseUpvalue),
+            29 => Some(Class),
+            30 => Some(GetProperty),
+            31 => Some(SetProperty),
             _ => None,
         }
     }
@@ -144,7 +150,13 @@ impl Chunk {
                 Some(Instruction::Simple(op.unwrap()))
             }
             Some(
-                Opcode::Constant | Opcode::DefineGlobal | Opcode::GetGlobal | Opcode::SetGlobal,
+                Opcode::GetProperty
+                | Opcode::SetProperty
+                | Opcode::Class
+                | Opcode::Constant
+                | Opcode::DefineGlobal
+                | Opcode::GetGlobal
+                | Opcode::SetGlobal,
             ) => {
                 let constant_idx = self.code[*offset + 1];
                 let constant = self.constants[constant_idx as usize];
