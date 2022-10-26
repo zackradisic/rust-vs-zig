@@ -1,7 +1,6 @@
 use std::{
     alloc::{self, handle_alloc_error, Layout},
     borrow::Cow,
-    cell::UnsafeCell,
     mem::MaybeUninit,
     ptr::{self, addr_of_mut, null_mut, NonNull},
 };
@@ -10,11 +9,8 @@ use crate::{
     chunk::{InstructionDebug, Opcode},
     mem::{Greystack, Mem},
     native_fn::NativeFnKind,
-    obj::{
-        Obj, ObjClosure, ObjFunction, ObjKind, ObjList, ObjNative, ObjPunnable, ObjString,
-        ObjUpvalue,
-    },
-    table::{ObjHash, Table},
+    obj::{Obj, ObjClosure, ObjFunction, ObjKind, ObjNative, ObjPunnable, ObjString, ObjUpvalue},
+    table::ObjHash,
     value::Value,
 };
 
@@ -61,10 +57,7 @@ pub static mut STACK: [MaybeUninit<Value>; STACK_MAX] = [MaybeUninit::uninit(); 
 pub type ValueStack = [MaybeUninit<Value>; STACK_MAX];
 
 pub struct VM<'b> {
-    // pub stack: Vec<MaybeUninit<Value>>,
-    // pub stack: [MaybeUninit<Value>; STACK_MAX],
     pub stack: &'b mut [MaybeUninit<Value>; STACK_MAX],
-    // pub stack: UnsafeCell<[MaybeUninit<Value>; STACK_MAX]>,
     marker: std::marker::PhantomData<&'b ()>,
     pub stack_top: u32,
     /// linked list of open upvalues for the top-most stack,
@@ -94,18 +87,12 @@ impl<'b> VM<'b> {
             closure,
         });
 
-        // let mut stack = [MaybeUninit::uninit(); STACK_MAX];
-        // let mut stack = vec![MaybeUninit::uninit(); STACK_MAX];
-        // let mut stack = UnsafeCell::new([MaybeUninit::uninit(); STACK_MAX]);
         stack[0] = MaybeUninit::new(Value::Obj(closure.cast()));
-        // stack.get_mut()[0] = MaybeUninit::new(Value::Obj(closure.cast()));
-        // unsafe { STACK[0] = MaybeUninit::new(Value::Obj(closure.cast())) };
 
         let mut this = Self {
             mem,
             open_upvalues: null_mut(),
-            // stack: unsafe { &mut STACK },
-            stack: stack,
+            stack,
             marker: Default::default(),
             stack_top: 1,
             call_frames,
@@ -205,7 +192,7 @@ impl<'b> VM<'b> {
         #[cfg(feature = "debug_gc")]
         let before = self.mem.bytes_allocated();
 
-        let mut greystack = std::mem::replace(&mut self.grey_stack, vec![]);
+        let mut greystack = std::mem::take(&mut self.grey_stack);
 
         self.mark_roots(&mut greystack);
         self.trace_references(&mut greystack);
@@ -227,11 +214,11 @@ impl<'b> VM<'b> {
     }
 
     fn alloc_obj<T: ObjPunnable>(&mut self, obj: T) -> NonNull<T> {
-        // if self.mem.bytes_allocated() + std::mem::size_of::<T>() > self.mem.next_gc {
-        #[cfg(feature = "debug_gc")]
-        println!("Allocated a {:?}, now collecting garbage", obj.kind());
-        self.collect_garbage();
-        // }
+        if self.mem.should_run_gc::<T>() {
+            #[cfg(feature = "debug_gc")]
+            println!("Allocated a {:?}, now collecting garbage", obj.kind());
+            self.collect_garbage();
+        }
 
         self.mem.alloc_obj(obj)
     }
@@ -306,13 +293,13 @@ impl<'b> VM<'b> {
     }
 
     fn runtime_error<'a>(&mut self, err: Cow<'a, str>) {
-        eprintln!("{}", err);
+        eprintln!("{err}");
 
         let frame = self.top_call_frame();
         let instr_idx = frame.instr_offset;
         let line = frame.function().chunk.lines[instr_idx as usize];
 
-        eprintln!("[line {}] in script", line);
+        eprintln!("[line {line}] in script");
 
         for frame in self
             .call_frames
@@ -384,9 +371,7 @@ impl<'b> VM<'b> {
     fn call(&mut self, closure: NonNull<ObjClosure>, arg_count: u8) -> bool {
         let arity = unsafe { closure.as_ref().function.as_ref().arity };
         if arg_count != arity {
-            self.runtime_error(
-                format!("Expected {} arguments but got {}.", arg_count, arity).into(),
-            );
+            self.runtime_error(format!("Expected {arg_count} arguments but got {arity}.").into());
             return false;
         }
 
@@ -547,7 +532,7 @@ impl<'b> VM<'b> {
                 // Debug stack
                 for slot in self.stack.iter().take(self.stack_top as usize) {
                     let value: &Value = unsafe { slot.assume_init_ref() };
-                    println!("          [ {:?} ]", value);
+                    println!("          [ {value:?} ]");
                 }
 
                 // Debug instruction
@@ -602,7 +587,7 @@ impl<'b> VM<'b> {
                 }
                 Some(Opcode::Closure) => {
                     let function = self.read_constant().as_fn_ptr().unwrap();
-                    let closure = self.new_closure(function);
+                    self.new_closure(function);
                     // TODO: investigate
                     // let closure = self.alloc_obj();
                     // let noob = Value::Obj(closure.cast());
@@ -701,7 +686,7 @@ impl<'b> VM<'b> {
                 }
                 Some(Opcode::Print) => {
                     let value = self.pop();
-                    println!("{:?}", value);
+                    println!("{value:?}");
                 }
                 Some(Opcode::Equal) => {
                     let b = self.pop();
@@ -753,7 +738,7 @@ impl<'b> VM<'b> {
                         self.binary_op(std::ops::Add::add)?
                     }
                 }
-                otherwise => panic!("Unknown opcode {:?}", otherwise),
+                otherwise => panic!("Unknown opcode {otherwise:?}"),
             }
         }
     }
@@ -815,14 +800,5 @@ impl<'b> VM<'b> {
     fn read_constant(&mut self) -> Value {
         let idx = self.read_byte();
         self.top_call_frame().function().chunk.constants[idx as usize]
-    }
-}
-
-impl<'b> Drop for VM<'b> {
-    fn drop(&mut self) {
-        unsafe {
-            // let layout = Layout::array::<MaybeUninit<Value>>(STACK_MAX).unwrap();
-            // alloc::dealloc(self.stack.as_mut_ptr().cast(), layout);
-        };
     }
 }

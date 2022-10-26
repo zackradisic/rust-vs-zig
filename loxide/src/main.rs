@@ -15,8 +15,7 @@ use std::{io::BufRead, mem::MaybeUninit, path::Path};
 
 use compile::Parser;
 use mem::Mem;
-use obj::ObjList;
-use table::Table;
+
 use vm::{InterpretError, InterpretResult, ValueStack, STACK_MAX};
 
 use crate::vm::VM;
@@ -75,13 +74,12 @@ fn interpret<'a>(stack: &'a mut ValueStack, src: &str) -> InterpretResult<VM<'a>
 #[cfg(test)]
 mod test {
 
-    use std::{mem::MaybeUninit, ptr::addr_of_mut};
+    use std::mem::MaybeUninit;
 
     use crate::{
         compile::Token,
         interpret,
         mem::Mem,
-        native_fn::NativeFn,
         table::Table,
         value::Value,
         vm::{ValueStack, STACK_MAX},
@@ -342,7 +340,7 @@ outer();"#;
 
         let val = ((chunk[offset as usize] as u16) << 8) | (chunk[offset as usize + 1] as u16);
 
-        println!("{} NOOB: {:?} JUMP: {} {}", jump, chunk, val, 2u16);
+        println!("{jump} NOOB: {chunk:?} JUMP: {val} {}", 2u16);
     }
 }
 

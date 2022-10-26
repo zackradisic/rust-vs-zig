@@ -1,7 +1,6 @@
 use std::{
-    alloc::{self, handle_alloc_error, Allocator, Global, GlobalAlloc, Layout, System},
+    alloc::{self, handle_alloc_error, Layout},
     ptr::{self, NonNull},
-    sync::atomic::AtomicUsize,
 };
 
 use crate::{
@@ -62,6 +61,18 @@ impl Mem {
             next_gc: 1024 * 1024,
             bytes_allocated: 0,
         }
+    }
+
+    #[cfg(feature = "always_gc")]
+    #[inline]
+    pub fn should_run_gc<T: Sized>(&self) -> bool {
+        true
+    }
+
+    #[cfg(not(feature = "always_gc"))]
+    #[inline]
+    pub fn should_run_gc<T: Sized>(&self) -> bool {
+        self.bytes_allocated() + std::mem::size_of::<T>() > self.next_gc
     }
 
     #[inline]

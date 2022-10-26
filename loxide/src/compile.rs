@@ -6,8 +6,7 @@ use std::{
 use crate::{
     chunk::{Chunk, Opcode},
     mem::Mem,
-    obj::{ObjFunction, ObjList, ObjString},
-    table::Table,
+    obj::ObjFunction,
     value::Value,
 };
 
@@ -653,7 +652,7 @@ impl<'a, 'src: 'a> Parser<'a, 'src> {
         self.emit_bytes(Opcode::Closure as u8, val);
 
         let upvalue_count = unsafe { func.as_ref().upvalue_count };
-        let func_name = unsafe {
+        let _func_name = unsafe {
             func.as_ref()
                 .name
                 .as_ref()
@@ -1111,7 +1110,7 @@ impl<'a, 'src: 'a> Parser<'a, 'src> {
             eprint!(" at {}", token.msg)
         }
 
-        eprintln!(": {}", msg);
+        eprintln!(": {msg}");
         self.had_error = true;
     }
 

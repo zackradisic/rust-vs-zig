@@ -12,3 +12,4 @@ mimalloc = "0.1.30"
 [features]
 default = []
 debug_gc = []
+always_gc = []

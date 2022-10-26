@@ -1,7 +1,7 @@
 use std::{
     alloc::{self, Layout},
-    collections::{LinkedList, VecDeque},
-    ptr::{self, addr_of_mut, NonNull},
+    collections::VecDeque,
+    ptr::NonNull,
     slice,
 };
 
@@ -237,7 +237,7 @@ impl std::fmt::Debug for ObjPtrWrapper {
             },
             ObjKind::Native => {
                 let function = unsafe { ptr.cast::<ObjNative>().as_ref().function };
-                write!(f, "{:?}", function)
+                write!(f, "{function:?}")
             }
             ObjKind::Closure => unsafe {
                 let ptr: NonNull<ObjClosure> = ptr.cast();

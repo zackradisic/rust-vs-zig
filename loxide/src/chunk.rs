@@ -190,7 +190,7 @@ impl Chunk {
                     upvalues,
                 })
             }
-            otherwise => panic!("Invalid opcode {:?}", otherwise),
+            otherwise => panic!("Invalid opcode {otherwise:?}"),
         }
     }
 }
@@ -230,7 +230,7 @@ impl std::fmt::Debug for Instruction {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Instruction::Simple(op) => {
-                write!(f, "{:?}", op)
+                write!(f, "{op:?}")
             }
             Instruction::Constant(op, val) => {
                 f.debug_tuple("Constant").field(op).field(val).finish()
