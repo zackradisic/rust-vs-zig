@@ -86,6 +86,72 @@ mod test {
     };
 
     #[test]
+    fn nested_this() {
+        let src = r#"
+        class Nested {
+            method() {
+              fun function() {
+                return this.lol;
+              }
+              return function();
+            }
+        }
+          
+        var nested = Nested();
+        nested.lol = 420;
+        var result = nested.method();"#;
+
+        let mut stack: ValueStack = [MaybeUninit::uninit(); STACK_MAX];
+        let mut vm = interpret(&mut stack, src).unwrap();
+        let result_str = vm.get_string("result");
+        let value = vm.mem.globals.get(result_str);
+        assert_eq!(value, Some(Value::Number(420.0)));
+    }
+
+    #[test]
+    fn this() {
+        let src = r#"
+        class Nested {
+            method() {
+              return this.lol;
+            }
+          }
+          
+        var nested = Nested();
+        nested.lol = 420;
+        var result = nested.method();"#;
+
+        let mut stack: ValueStack = [MaybeUninit::uninit(); STACK_MAX];
+        let mut vm = interpret(&mut stack, src).unwrap();
+        let result_str = vm.get_string("result");
+        let value = vm.mem.globals.get(result_str);
+        assert_eq!(value, Some(Value::Number(420.0)));
+    }
+
+    #[test]
+    fn methods() {
+        let src = r#"
+        class Scone {
+            topping(first, second) {
+              return "scone with " + first + " and " + second;
+            }
+          }
+          
+          var scone = Scone();
+          var result = scone.topping("berries", "cream");"#;
+        let mut stack: ValueStack = [MaybeUninit::uninit(); STACK_MAX];
+        let mut vm = interpret(&mut stack, src).unwrap();
+
+        let result_str = vm.get_string("result");
+
+        let value = vm.mem.globals.get(result_str);
+
+        let expected_str = vm.get_string("scone with berries and cream");
+        println!("VAL: {:?}", value);
+        assert_eq!(value, Some(Value::Obj(expected_str.cast())));
+    }
+
+    #[test]
     fn instance_get_set() {
         let src = r#"
 class Pair {}

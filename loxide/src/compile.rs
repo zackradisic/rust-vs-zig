@@ -100,6 +100,7 @@ pub struct Local<'src> {
 
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub enum FunctionKind {
+    Method,
     Function,
     Script,
 }
@@ -107,6 +108,7 @@ pub enum FunctionKind {
 #[derive(Debug, Clone, PartialEq)]
 pub enum FunctionKindT<T> {
     Function(T),
+    Method(T),
     Script,
 }
 
@@ -142,10 +144,13 @@ impl<'src> Compiler<'src> {
                 mem.copy_string(prev_tok.msg).as_ptr(),
                 FunctionKind::Function,
             ),
+            FunctionKindT::Method(prev_tok) => {
+                (mem.copy_string(prev_tok.msg).as_ptr(), FunctionKind::Method)
+            }
             FunctionKindT::Script => (null_mut(), FunctionKind::Script),
         };
 
-        let function = unsafe { mem.alloc_obj(ObjFunction::new(function_name)) };
+        let function = mem.alloc_obj(ObjFunction::new(function_name));
 
         let mut this = Self {
             enclosing: None,
@@ -164,11 +169,16 @@ impl<'src> Compiler<'src> {
         // value through raw pointer
         unsafe {
             let mut local_ptr = this.locals.stack[0].as_mut_ptr();
+            (*local_ptr).is_captured = false;
             (*local_ptr).depth = Some(0);
             (*local_ptr).name = Token {
                 kind: TokenKind::Nil,
                 line: 0,
-                msg: "",
+                msg: if function_kind != FunctionKind::Function {
+                    "this"
+                } else {
+                    ""
+                },
             };
         }
         this.locals.count += 1;
@@ -366,7 +376,7 @@ impl<'a, 'src: 'a> Parser<'a, 'src> {
         // super
         none_prec!(),
         // this
-        none_prec!(),
+        parse_rule!(pre = Parser::this, Precedence::None),
         // true
         parse_rule!(pre = Parser::literal, Precedence::None),
         // var
@@ -498,14 +508,29 @@ impl<'a, 'src: 'a> Parser<'a, 'src> {
 
     fn class_declaration(&mut self) {
         self.consume(TokenKind::Identifier, "Expect class name.");
+        let class_name = self.prev();
         let name_constant = self.identifier_constant(self.prev());
         self.declare_variable();
 
         self.emit_bytes(Opcode::Class as u8, name_constant);
         self.define_variable(name_constant);
+        self.named_variable(class_name, ParseRuleCtx { can_assign: false });
 
         self.consume(TokenKind::LeftBrace, "Expect '{' before class body.");
+        while !self.check(TokenKind::RightBrace) && !self.check(TokenKind::Eof) {
+            self.method();
+        }
         self.consume(TokenKind::RightBrace, "Expect '}' after class body.");
+        self.emit_byte(Opcode::Pop as u8);
+    }
+
+    fn method(&mut self) {
+        self.consume(TokenKind::Identifier, "Expect method name.");
+        let constant = self.identifier_constant(self.prev());
+
+        let kind = FunctionKind::Method;
+        self.function(kind);
+        self.emit_bytes(Opcode::Method as u8, constant);
     }
 
     fn fn_declaration(&mut self) {
@@ -634,6 +659,7 @@ impl<'a, 'src: 'a> Parser<'a, 'src> {
     fn function(&mut self, kind: FunctionKind) {
         let kindt = match kind {
             FunctionKind::Function => FunctionKindT::Function(self.prev()),
+            FunctionKind::Method => FunctionKindT::Method(self.prev()),
             FunctionKind::Script => FunctionKindT::Script,
         };
 
@@ -1175,6 +1201,10 @@ impl<'a, 'src: 'a> Parser<'a, 'src> {
 
     fn variable(&mut self, ctx: ParseRuleCtx) {
         self.named_variable(self.prev(), ctx);
+    }
+
+    fn this(&mut self, _ctx: ParseRuleCtx) {
+        self.variable(ParseRuleCtx { can_assign: false })
     }
 }
 

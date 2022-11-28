@@ -10,8 +10,8 @@ use crate::{
     mem::{Greystack, Mem},
     native_fn::NativeFnKind,
     obj::{
-        Obj, ObjClass, ObjClosure, ObjFunction, ObjInstance, ObjKind, ObjNative, ObjPunnable,
-        ObjString, ObjUpvalue,
+        Obj, ObjBoundMethod, ObjClass, ObjClosure, ObjFunction, ObjInstance, ObjKind, ObjNative,
+        ObjPunnable, ObjString, ObjUpvalue,
     },
     table::ObjHash,
     value::Value,
@@ -264,7 +264,10 @@ impl<'b> VM<'b> {
 
     #[inline]
     fn push(&mut self, val: Value) {
-        self.stack[self.stack_top as usize] = MaybeUninit::new(val);
+        unsafe {
+            *self.stack.as_mut_ptr().add(self.stack_top as usize) = MaybeUninit::new(val);
+        }
+        // self.stack[self.stack_top as usize] = MaybeUninit::new(val);
         self.stack_top += 1;
     }
 
@@ -437,6 +440,12 @@ impl<'b> VM<'b> {
                         self.push(result);
                         return true;
                     }
+                    ObjKind::BoundMethod => {
+                        let bound: NonNull<ObjBoundMethod> = obj.cast();
+                        self.stack[self.stack_top as usize - arg_count as usize - 1] =
+                            MaybeUninit::new(unsafe { bound.as_ref() }.receiver);
+                        return self.call(unsafe { bound.as_ref() }.method, arg_count);
+                    }
                     _ => (),
                 }
             }
@@ -530,6 +539,36 @@ impl<'b> VM<'b> {
         }
     }
 
+    fn define_method(&mut self, name: NonNull<ObjString>) {
+        let method = self.peek(0);
+        let mut class_value = self.peek(1);
+        let class = class_value.as_class_mut().unwrap();
+        class.methods.set(name, method);
+        self.pop();
+    }
+
+    fn bind_method(&mut self, class: NonNull<ObjClass>, name: NonNull<ObjString>) -> bool {
+        let method = match unsafe { (*class.as_ptr()).methods.get(name) } {
+            Some(method) => method,
+            None => {
+                self.runtime_error(
+                    format!("Undefined property {}", unsafe { name.as_ref() }.as_str()).into(),
+                );
+
+                return false;
+            }
+        };
+
+        let receiver = self.peek(0);
+        let bound = ObjBoundMethod::new(receiver, method.as_closure_ptr().unwrap());
+        let bound = self.alloc_obj(bound);
+
+        self.pop();
+        self.push(Value::Obj(bound.cast()));
+
+        true
+    }
+
     pub fn run(&mut self) -> InterpretResult<()> {
         loop {
             #[cfg(debug_assertions)]
@@ -554,9 +593,13 @@ impl<'b> VM<'b> {
             let byte = self.read_byte();
 
             match Opcode::from_u8(byte) {
+                Some(Opcode::Method) => {
+                    let obj_str = self.read_constant().as_obj_str_ptr().unwrap();
+                    self.define_method(obj_str)
+                }
                 Some(Opcode::GetProperty) => {
                     let top = self.peek(0);
-                    let instance = match top.as_instance_fn() {
+                    let instance = match top.as_instance_ptr() {
                         Some(instance) => instance,
                         None => {
                             self.runtime_error("Only instances have properties.".into());
@@ -569,19 +612,15 @@ impl<'b> VM<'b> {
                         .as_obj_str_ptr()
                         .expect("Expect to read a string constant.");
 
-                    match instance.fields.get(name) {
+                    match unsafe { &*instance.as_ptr() }.fields.get(name) {
                         Some(val) => {
                             self.pop();
                             self.push(val);
                         }
                         None => {
-                            self.runtime_error(
-                                format!("Undefined property {:?}", unsafe {
-                                    name.as_ref().as_str()
-                                })
-                                .into(),
-                            );
-                            return Err(InterpretError::RuntimeError);
+                            if !self.bind_method(unsafe { &*instance.as_ptr() }.class, name) {
+                                return Err(InterpretError::RuntimeError);
+                            }
                         }
                     }
                 }

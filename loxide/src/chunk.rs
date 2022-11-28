@@ -39,6 +39,7 @@ pub enum Opcode {
     Class,
     GetProperty,
     SetProperty,
+    Method,
 }
 
 impl Opcode {
@@ -77,6 +78,7 @@ impl Opcode {
             29 => Some(Class),
             30 => Some(GetProperty),
             31 => Some(SetProperty),
+            32 => Some(Method),
             _ => None,
         }
     }
@@ -150,7 +152,8 @@ impl Chunk {
                 Some(Instruction::Simple(op.unwrap()))
             }
             Some(
-                Opcode::GetProperty
+                Opcode::Method
+                | Opcode::GetProperty
                 | Opcode::SetProperty
                 | Opcode::Class
                 | Opcode::Constant

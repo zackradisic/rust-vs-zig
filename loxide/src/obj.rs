@@ -60,6 +60,11 @@ impl ObjPunnable for ObjInstance {
         ObjKind::Instance
     }
 }
+impl ObjPunnable for ObjBoundMethod {
+    fn kind(&self) -> ObjKind {
+        ObjKind::BoundMethod
+    }
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -71,6 +76,7 @@ pub enum ObjKind {
     Upvalue,
     Class,
     Instance,
+    BoundMethod,
 }
 
 #[repr(C)]
@@ -108,6 +114,14 @@ pub struct ObjClosure {
 pub struct ObjClass {
     pub obj: Obj,
     pub name: NonNull<ObjString>,
+    pub methods: Table,
+}
+
+#[repr(C)]
+pub struct ObjBoundMethod {
+    pub obj: Obj,
+    pub receiver: Value,
+    pub method: NonNull<ObjClosure>,
 }
 
 #[repr(C)]
@@ -166,12 +180,18 @@ impl Obj {
                     obj.cast::<ObjClass>().as_ref().name.cast().as_ptr(),
                     greystack,
                 );
+                (*obj.cast::<ObjClass>().as_ref()).methods.mark(greystack);
             }
-            ObjKind::Instance => unsafe {
+            ObjKind::Instance => {
                 let instance_ptr = obj.cast::<ObjInstance>().as_ptr();
                 Obj::mark((*instance_ptr).class.as_ptr() as *mut _, greystack);
                 (*instance_ptr).fields.mark(greystack);
-            },
+            }
+            ObjKind::BoundMethod => {
+                let bound = obj.cast::<ObjBoundMethod>().as_ptr();
+                (*bound).receiver.mark(greystack);
+                Obj::mark((*bound).method.as_ptr() as *mut _, greystack);
+            }
         }
     }
 
@@ -252,12 +272,16 @@ impl Obj {
                     let _ = Box::from_raw(obj as *mut ObjUpvalue);
                 }
                 ObjKind::Class => {
-                    let _ = Box::from_raw(obj as *mut ObjClass);
+                    let mut obj = Box::from_raw(obj as *mut ObjClass);
+                    Table::free(&mut obj.methods);
                 }
                 ObjKind::Instance => {
                     Table::free(&mut (*(obj as *mut ObjInstance)).fields);
 
                     let _ = Box::from_raw(obj as *mut ObjInstance);
+                }
+                ObjKind::BoundMethod => {
+                    let _ = Box::from_raw(obj as *mut ObjBoundMethod);
                 }
             }
         }
@@ -328,6 +352,16 @@ impl std::fmt::Debug for ObjPtrWrapper {
                         &ObjPtrWrapper(instance.class.cast::<Obj>().as_ptr()),
                     )
                     .field("fields", &instance.fields)
+                    .finish()
+            },
+            ObjKind::BoundMethod => unsafe {
+                let name = (*(*(*ptr.cast::<ObjBoundMethod>().as_ptr()).method.as_ptr())
+                    .function
+                    .as_ptr())
+                .name;
+
+                f.debug_struct("BoundMethod")
+                    .field("name", &ObjPtrWrapper(name.cast::<Obj>()))
                     .finish()
             },
         }
@@ -406,6 +440,7 @@ impl ObjClass {
                 is_marked: false,
             },
             name,
+            methods: Table::new(),
         }
     }
 }
@@ -419,6 +454,19 @@ impl ObjInstance {
             },
             class,
             fields: Table::new(),
+        }
+    }
+}
+
+impl ObjBoundMethod {
+    pub fn new(receiver: Value, method: NonNull<ObjClosure>) -> Self {
+        Self {
+            obj: Obj {
+                kind: ObjKind::BoundMethod,
+                is_marked: false,
+            },
+            receiver,
+            method,
         }
     }
 }

@@ -7,8 +7,8 @@ use std::{
 use crate::{
     mem::Greystack,
     obj::{
-        Obj, ObjClass, ObjClosure, ObjFunction, ObjInstance, ObjKind, ObjNative, ObjPtrWrapper,
-        ObjString,
+        Obj, ObjBoundMethod, ObjClass, ObjClosure, ObjFunction, ObjInstance, ObjKind, ObjNative,
+        ObjPtrWrapper, ObjString,
     },
 };
 
@@ -49,6 +49,40 @@ impl Value {
         match self {
             Value::Obj(obj) => unsafe { (*obj.as_ptr()).kind == ObjKind::Native },
             _ => false,
+        }
+    }
+
+    pub fn as_bound_method_ptr(&self) -> Option<NonNull<ObjBoundMethod>> {
+        match self {
+            Value::Obj(obj) if unsafe { (*obj.as_ptr()).kind == ObjKind::BoundMethod } => {
+                Some(obj.cast())
+            }
+            _ => None,
+        }
+    }
+
+    pub fn as_bound_method_mut(&mut self) -> Option<&mut ObjBoundMethod> {
+        match *self {
+            Value::Obj(obj) => unsafe {
+                let kind = (*obj.as_ptr()).kind;
+                match kind {
+                    ObjKind::BoundMethod => Some(obj.cast().as_mut()),
+                    _ => None,
+                }
+            },
+            _ => None,
+        }
+    }
+    pub fn as_bound_method(&self) -> Option<&ObjBoundMethod> {
+        match *self {
+            Value::Obj(obj) => unsafe {
+                let kind = (*obj.as_ptr()).kind;
+                match kind {
+                    ObjKind::BoundMethod => Some(obj.cast().as_ref()),
+                    _ => None,
+                }
+            },
+            _ => None,
         }
     }
 
@@ -95,12 +129,25 @@ impl Value {
         }
     }
 
-    pub fn as_class_fn(&self) -> Option<&ObjClass> {
+    pub fn as_class(&self) -> Option<&ObjClass> {
         match *self {
             Value::Obj(obj) => unsafe {
                 let kind = (*obj.as_ptr()).kind;
                 match kind {
                     ObjKind::Class => Some(obj.cast().as_ref()),
+                    _ => None,
+                }
+            },
+            _ => None,
+        }
+    }
+
+    pub fn as_class_mut(&mut self) -> Option<&mut ObjClass> {
+        match *self {
+            Value::Obj(obj) => unsafe {
+                let kind = (*obj.as_ptr()).kind;
+                match kind {
+                    ObjKind::Class => Some(obj.cast().as_mut()),
                     _ => None,
                 }
             },
