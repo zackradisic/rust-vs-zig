@@ -21,7 +21,7 @@ const GC_HEAP_GROW_FACTOR: usize = 2;
 
 pub type InterpretResult<T> = Result<T, InterpretError>;
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum InterpretError {
     RuntimeError,
     CompileError,
@@ -73,6 +73,8 @@ pub struct VM<'b> {
 
     pub mem: Mem,
     pub grey_stack: Greystack,
+
+    pub init_string: NonNull<ObjString>,
 }
 
 impl<'b> VM<'b> {
@@ -93,6 +95,7 @@ impl<'b> VM<'b> {
         stack[0] = MaybeUninit::new(Value::Obj(closure.cast()));
 
         let mut this = Self {
+            init_string: mem.copy_string("init"),
             mem,
             open_upvalues: null_mut(),
             stack,
@@ -187,6 +190,9 @@ impl<'b> VM<'b> {
         }
 
         self.mem.globals.mark(greystack);
+        unsafe {
+            Obj::mark(self.init_string.as_ptr().cast(), greystack);
+        }
     }
 
     fn collect_garbage(&mut self) {
@@ -264,10 +270,10 @@ impl<'b> VM<'b> {
 
     #[inline]
     fn push(&mut self, val: Value) {
-        unsafe {
-            *self.stack.as_mut_ptr().add(self.stack_top as usize) = MaybeUninit::new(val);
-        }
-        // self.stack[self.stack_top as usize] = MaybeUninit::new(val);
+        // unsafe {
+        //     *self.stack.as_mut_ptr().add(self.stack_top as usize) = MaybeUninit::new(val);
+        // }
+        self.stack[self.stack_top as usize] = MaybeUninit::new(val);
         self.stack_top += 1;
     }
 
@@ -426,6 +432,20 @@ impl<'b> VM<'b> {
                         let instance = self.alloc_obj(ObjInstance::new(class));
                         self.stack[self.stack_top as usize - arg_count as usize - 1] =
                             MaybeUninit::new(Value::Obj(instance.cast()));
+
+                        if let Some(initializer) =
+                            unsafe { class.as_ref() }.methods.get(self.init_string)
+                        {
+                            return self.call(initializer.as_closure_ptr().unwrap(), arg_count);
+                        }
+
+                        if arg_count != 0 {
+                            self.runtime_error(
+                                format!("Expected 0 arguments but got {:?}", arg_count).into(),
+                            );
+                            return false;
+                        }
+
                         return true;
                     }
                     ObjKind::Closure => return self.call(obj.cast(), arg_count),
@@ -531,7 +551,16 @@ impl<'b> VM<'b> {
                 }
 
                 let upvalue_ptr = upvalue.as_ptr();
-                (*upvalue_ptr).closed = *((*upvalue_ptr).location.as_ptr());
+
+                // why does this work
+                let location_ptr = (*upvalue_ptr).location;
+                let offset = location_ptr.as_ptr().sub_ptr(self.stack.as_ptr() as *mut _);
+                let closed = self.stack[offset];
+                (*upvalue_ptr).closed = closed.assume_init();
+
+                // but this doesn't? are we sidestepping miri by doing ptr addition above?
+                // (*upvalue_ptr).closed = *((*upvalue_ptr).location.as_ptr());
+
                 (*upvalue_ptr).location =
                     NonNull::new(addr_of_mut!((*upvalue_ptr).closed)).unwrap();
                 self.open_upvalues = (*upvalue_ptr).next;
@@ -569,6 +598,45 @@ impl<'b> VM<'b> {
         true
     }
 
+    fn invoke(&mut self, name: NonNull<ObjString>, arg_count: u8) -> bool {
+        let receiver = self.peek(arg_count as u32);
+        let instance = match receiver.as_instance_fn() {
+            Some(inst) => inst,
+            None => {
+                self.runtime_error("Only instances have methods.".into());
+                return false;
+            }
+        };
+
+        if let Some(field) = instance.fields.get(name) {
+            self.stack[self.stack_top as usize - arg_count as usize - 1] = MaybeUninit::new(field);
+            return self.call_value(field, arg_count);
+        }
+
+        self.invoke_from_class(instance.class, name, arg_count)
+    }
+
+    fn invoke_from_class(
+        &mut self,
+        class: NonNull<ObjClass>,
+        name: NonNull<ObjString>,
+        arg_count: u8,
+    ) -> bool {
+        let method = unsafe { class.as_ref() }.methods.get(name);
+        match method {
+            Some(method) => {
+                self.call(method.as_closure_ptr().unwrap(), arg_count);
+                true
+            }
+            None => {
+                self.runtime_error(
+                    format!("Undefined property {}", unsafe { name.as_ref() }.as_str()).into(),
+                );
+                false
+            }
+        }
+    }
+
     pub fn run(&mut self) -> InterpretResult<()> {
         loop {
             #[cfg(debug_assertions)]
@@ -593,6 +661,13 @@ impl<'b> VM<'b> {
             let byte = self.read_byte();
 
             match Opcode::from_u8(byte) {
+                Some(Opcode::Invoke) => {
+                    let method = self.read_constant().as_obj_str_ptr().unwrap();
+                    let arg_count = self.read_byte();
+                    if !self.invoke(method, arg_count) {
+                        return Err(InterpretError::RuntimeError);
+                    }
+                }
                 Some(Opcode::Method) => {
                     let obj_str = self.read_constant().as_obj_str_ptr().unwrap();
                     self.define_method(obj_str)

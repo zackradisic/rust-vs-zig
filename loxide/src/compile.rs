@@ -103,6 +103,7 @@ pub enum FunctionKind {
     Method,
     Function,
     Script,
+    Initializer,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -110,6 +111,7 @@ pub enum FunctionKindT<T> {
     Function(T),
     Method(T),
     Script,
+    Initializer,
 }
 
 pub struct Locals<'src> {
@@ -125,9 +127,21 @@ pub struct Upvalue {
     pub is_local: bool,
 }
 
+#[derive(Debug)]
+pub struct ClassCompiler {
+    enclosing: Option<Box<ClassCompiler>>,
+}
+
+impl ClassCompiler {
+    pub fn new(enclosing: Option<Box<ClassCompiler>>) -> Self {
+        Self { enclosing }
+    }
+}
+
 pub struct Compiler<'src> {
     pub function: NonNull<ObjFunction>,
     enclosing: Option<Box<Compiler<'src>>>,
+    class_compiler: Option<Box<ClassCompiler>>,
     function_kind: FunctionKind,
     locals: Locals<'src>,
     scope_depth: usize,
@@ -138,7 +152,11 @@ impl<'src> Compiler<'src> {
     const UNINTIALIZED_LOCAL: MaybeUninit<Local<'src>> = MaybeUninit::uninit();
     const UNINTIALIZED_UPVALUE: MaybeUninit<Upvalue> = MaybeUninit::uninit();
 
-    pub fn new(function_kind: FunctionKindT<Token>, mem: &mut Mem) -> Self {
+    pub fn new(
+        function_kind: FunctionKindT<Token>,
+        class_compiler: Option<Box<ClassCompiler>>,
+        mem: &mut Mem,
+    ) -> Self {
         let (function_name, function_kind) = match function_kind {
             FunctionKindT::Function(prev_tok) => (
                 mem.copy_string(prev_tok.msg).as_ptr(),
@@ -148,12 +166,14 @@ impl<'src> Compiler<'src> {
                 (mem.copy_string(prev_tok.msg).as_ptr(), FunctionKind::Method)
             }
             FunctionKindT::Script => (null_mut(), FunctionKind::Script),
+            FunctionKindT::Initializer => (null_mut(), FunctionKind::Initializer),
         };
 
         let function = mem.alloc_obj(ObjFunction::new(function_name));
 
         let mut this = Self {
             enclosing: None,
+            class_compiler,
             function,
             function_kind,
             locals: Locals {
@@ -391,7 +411,7 @@ impl<'a, 'src: 'a> Parser<'a, 'src> {
 
     pub fn new(src: &'src str, mem: &'a mut Mem) -> Self {
         let scanner = Scanner::new(src);
-        let compiler = Box::new(Compiler::new(FunctionKindT::Script, mem));
+        let compiler = Box::new(Compiler::new(FunctionKindT::Script, None, mem));
 
         Self {
             compiler,
@@ -514,6 +534,11 @@ impl<'a, 'src: 'a> Parser<'a, 'src> {
 
         self.emit_bytes(Opcode::Class as u8, name_constant);
         self.define_variable(name_constant);
+
+        self.compiler.class_compiler = Some(Box::new(ClassCompiler::new(
+            self.compiler.class_compiler.take(),
+        )));
+
         self.named_variable(class_name, ParseRuleCtx { can_assign: false });
 
         self.consume(TokenKind::LeftBrace, "Expect '{' before class body.");
@@ -522,13 +547,22 @@ impl<'a, 'src: 'a> Parser<'a, 'src> {
         }
         self.consume(TokenKind::RightBrace, "Expect '}' after class body.");
         self.emit_byte(Opcode::Pop as u8);
+
+        self.compiler.class_compiler = self
+            .compiler
+            .class_compiler
+            .take()
+            .and_then(|cc| cc.enclosing);
     }
 
     fn method(&mut self) {
         self.consume(TokenKind::Identifier, "Expect method name.");
         let constant = self.identifier_constant(self.prev());
 
-        let kind = FunctionKind::Method;
+        let mut kind = FunctionKind::Method;
+        if self.prev().msg == "init" {
+            kind = FunctionKind::Initializer;
+        }
         self.function(kind);
         self.emit_bytes(Opcode::Method as u8, constant);
     }
@@ -619,6 +653,10 @@ impl<'a, 'src: 'a> Parser<'a, 'src> {
         if ctx.can_assign && self.match_tok(TokenKind::Equal) {
             self.expression();
             self.emit_bytes(Opcode::SetProperty as u8, name);
+        } else if self.match_tok(TokenKind::LeftParen) {
+            let arg_count = self.argument_list();
+            self.emit_bytes(Opcode::Invoke as u8, name);
+            self.emit_byte(arg_count);
         } else {
             self.emit_bytes(Opcode::GetProperty as u8, name);
         }
@@ -661,10 +699,14 @@ impl<'a, 'src: 'a> Parser<'a, 'src> {
             FunctionKind::Function => FunctionKindT::Function(self.prev()),
             FunctionKind::Method => FunctionKindT::Method(self.prev()),
             FunctionKind::Script => FunctionKindT::Script,
+            FunctionKind::Initializer => FunctionKindT::Initializer,
         };
 
-        let temp_compiler =
-            std::mem::replace(&mut self.compiler, Box::new(Compiler::new(kindt, self.mem)));
+        let temp = self.compiler.class_compiler.take();
+        let temp_compiler = std::mem::replace(
+            &mut self.compiler,
+            Box::new(Compiler::new(kindt, temp, self.mem)),
+        );
         self.compiler.enclosing = Some(temp_compiler);
 
         self.begin_scope();
@@ -697,8 +739,10 @@ impl<'a, 'src: 'a> Parser<'a, 'src> {
 
         let func = self.compiler.function;
         // back to the original compiler
+        let temp_class_compiler = self.compiler.class_compiler.take();
         let temp_compiler = self.compiler.enclosing.take().unwrap();
         let temp_compiler = std::mem::replace(&mut self.compiler, temp_compiler);
+        self.compiler.class_compiler = temp_class_compiler;
 
         let val = self.make_constant(Value::Obj(func.cast()));
         self.emit_bytes(Opcode::Closure as u8, val);
@@ -936,6 +980,10 @@ impl<'a, 'src: 'a> Parser<'a, 'src> {
         if self.match_tok(TokenKind::Semicolon) {
             self.emit_return();
         } else {
+            if self.compiler.function_kind == FunctionKind::Initializer {
+                self.error("Can't return a value from an initializer.");
+            }
+
             self.expression();
             self.consume(TokenKind::Semicolon, "Expect ';' after return value.");
             self.emit_byte(Opcode::Return as u8);
@@ -1086,7 +1134,12 @@ impl<'a, 'src: 'a> Parser<'a, 'src> {
     ///
     /// If the function has a return statement, that is handled in `self.return_statement()` function
     fn emit_return(&mut self) {
-        self.emit_byte(Opcode::Nil as u8);
+        if self.compiler.function_kind == FunctionKind::Initializer {
+            // slot 0 contains the instance
+            self.emit_bytes(Opcode::GetLocal as u8, 0);
+        } else {
+            self.emit_byte(Opcode::Nil as u8);
+        }
         self.emit_byte(Opcode::Return as u8)
     }
 
@@ -1204,6 +1257,10 @@ impl<'a, 'src: 'a> Parser<'a, 'src> {
     }
 
     fn this(&mut self, _ctx: ParseRuleCtx) {
+        if self.compiler.class_compiler.is_none() {
+            self.error("Can't use 'this' outside of a class.");
+            return;
+        }
         self.variable(ParseRuleCtx { can_assign: false })
     }
 }

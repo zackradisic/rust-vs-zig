@@ -40,6 +40,7 @@ pub enum Opcode {
     GetProperty,
     SetProperty,
     Method,
+    Invoke,
 }
 
 impl Opcode {
@@ -79,6 +80,7 @@ impl Opcode {
             30 => Some(GetProperty),
             31 => Some(SetProperty),
             32 => Some(Method),
+            33 => Some(Invoke),
             _ => None,
         }
     }
@@ -205,6 +207,13 @@ impl Chunk {
                     upvalues,
                 })
             }
+            Some(Opcode::Invoke) => {
+                let method = self.code[*offset + 1];
+                let arg_count = self.code[*offset + 2];
+                let method = self.constants[method as usize];
+                *offset += 3;
+                Some(Instruction::Invoke { method, arg_count })
+            }
             otherwise => panic!("Invalid opcode {otherwise:?}"),
         }
     }
@@ -239,6 +248,10 @@ pub enum Instruction {
         function: Value,
         upvalues: Vec<Upvalue>,
     },
+    Invoke {
+        method: Value,
+        arg_count: u8,
+    },
 }
 
 impl std::fmt::Debug for Instruction {
@@ -256,6 +269,11 @@ impl std::fmt::Debug for Instruction {
                 .debug_struct("Closure")
                 .field("function", &function)
                 .field("upvalues", &upvalues)
+                .finish(),
+            Instruction::Invoke { method, arg_count } => f
+                .debug_tuple("Invoke")
+                .field(method)
+                .field(arg_count)
                 .finish(),
         }
     }

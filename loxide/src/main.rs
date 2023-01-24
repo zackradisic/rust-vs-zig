@@ -1,3 +1,4 @@
+#![feature(ptr_sub_ptr)]
 #![feature(allocator_api)]
 #![feature(slice_ptr_get)]
 #![feature(let_chains)]
@@ -82,8 +83,48 @@ mod test {
         mem::Mem,
         table::Table,
         value::Value,
-        vm::{ValueStack, STACK_MAX},
+        vm::{InterpretError, ValueStack, STACK_MAX},
     };
+
+    #[test]
+    fn invoking_fields() {
+        let src = r#"
+        class Oops {
+            init() {
+                fun f() {
+                    return 420;
+                }
+
+                this.field = f;
+            }
+        }
+
+        var oops = Oops();
+        var result = oops.field();
+        "#;
+
+        let mut stack: ValueStack = [MaybeUninit::uninit(); STACK_MAX];
+        let mut vm = interpret(&mut stack, src).unwrap();
+        let result_str = vm.get_string("result");
+        let value = vm.mem.globals.get(result_str);
+        assert_eq!(value, Some(Value::Number(420.0)));
+    }
+
+    #[test]
+    fn misusing_this() {
+        let src = r#"
+        fun notMethod() {
+            print this;
+        }
+        "#;
+
+        let mut stack: ValueStack = [MaybeUninit::uninit(); STACK_MAX];
+        let err = interpret(&mut stack, src);
+        if let Err(InterpretError::CompileError) = err {
+        } else {
+            panic!()
+        }
+    }
 
     #[test]
     fn nested_this() {
