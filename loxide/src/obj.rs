@@ -7,13 +7,13 @@ use std::{
 
 use crate::{
     chunk::Chunk,
-    mem::Greystack,
+    mem::{Gc, Greystack},
     native_fn::NativeFnKind,
     table::{ObjHash, Table},
     value::Value,
 };
 
-pub type ObjList = VecDeque<NonNull<Obj>>;
+pub type ObjList = VecDeque<Gc<Obj>>;
 
 /// This is to enable type-safe functions generic over types that are type punnable to Obj
 pub trait ObjPunnable: Sized {
@@ -105,7 +105,7 @@ pub struct ObjUpvalue {
 #[repr(C)]
 pub struct ObjClosure {
     pub obj: Obj,
-    pub function: NonNull<ObjFunction>,
+    pub function: Gc<ObjFunction>,
     pub upvalues: NonNull<*mut ObjUpvalue>,
     pub upvalue_count: u8,
 }
@@ -121,13 +121,13 @@ pub struct ObjClass {
 pub struct ObjBoundMethod {
     pub obj: Obj,
     pub receiver: Value,
-    pub method: NonNull<ObjClosure>,
+    pub method: Gc<ObjClosure>,
 }
 
 #[repr(C)]
 pub struct ObjInstance {
     pub obj: Obj,
-    pub class: NonNull<ObjClass>,
+    pub class: Gc<ObjClass>,
     pub fields: Table,
 }
 
@@ -195,12 +195,12 @@ impl Obj {
         }
     }
 
-    pub unsafe fn mark(obj: *mut Obj, greystack: &mut Greystack) {
+    pub fn mark(obj: *mut Obj, greystack: &mut Greystack) {
         if obj.is_null() {
             return;
         }
 
-        if obj.as_ref().unwrap_unchecked().is_marked {
+        if unsafe { obj.as_ref() }.unwrap().is_marked {
             return;
         }
 
@@ -212,7 +212,9 @@ impl Obj {
         );
 
         // let kind = (*obj).kind;
-        (*obj).is_marked = true;
+        unsafe {
+            (*obj).is_marked = true;
+        }
 
         // Safety:
         // We checked that obj is non null above
@@ -395,7 +397,7 @@ impl ObjUpvalue {
 }
 
 impl ObjClosure {
-    pub fn new(function: NonNull<ObjFunction>) -> Self {
+    pub fn new(function: Gc<ObjFunction>) -> Self {
         let (upvalues, upvalue_count) = unsafe {
             let upvalue_count = (*function.as_ptr()).upvalue_count;
             let upvalues = if upvalue_count == 0 {
@@ -446,7 +448,7 @@ impl ObjClass {
 }
 
 impl ObjInstance {
-    pub fn new(class: NonNull<ObjClass>) -> Self {
+    pub fn new(class: Gc<ObjClass>) -> Self {
         Self {
             obj: Obj {
                 kind: ObjKind::Instance,
@@ -459,7 +461,7 @@ impl ObjInstance {
 }
 
 impl ObjBoundMethod {
-    pub fn new(receiver: Value, method: NonNull<ObjClosure>) -> Self {
+    pub fn new(receiver: Value, method: Gc<ObjClosure>) -> Self {
         Self {
             obj: Obj {
                 kind: ObjKind::BoundMethod,

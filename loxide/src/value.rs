@@ -5,7 +5,7 @@ use std::{
 };
 
 use crate::{
-    mem::Greystack,
+    mem::{Gc, Greystack},
     obj::{
         Obj, ObjBoundMethod, ObjClass, ObjClosure, ObjFunction, ObjInstance, ObjKind, ObjNative,
         ObjPtrWrapper, ObjString,
@@ -14,242 +14,105 @@ use crate::{
 
 pub type ValueArray = Vec<Value>;
 
-// PERF: Nan-Boxing?
 #[derive(Copy, Clone)]
 pub enum Value {
     Bool(bool),
     Number(f64),
     Nil,
-    Obj(NonNull<Obj>),
+    Obj(Gc<Obj>),
 }
 
 impl Value {
+    // pub fn from_num(num: f64) -> Self {
+    //     let bits = num.to_bits();
+    //     Self(bits)
+    // }
+
+    // pub fn to_num(self) -> f64 {
+    //     f64::from_bits(self.0)
+    // }
+
+    // #[cfg(not(feature = "nanboxing"))]
     pub fn mark(&self, greystack: &mut Greystack) {
         match *self {
-            Value::Obj(obj) => unsafe { Obj::mark(obj.as_ptr(), greystack) },
+            Value::Obj(obj) => Obj::mark(obj.as_ptr(), greystack),
             _ => (),
         }
     }
 
     pub fn is_str(&self) -> bool {
         match *self {
-            Value::Obj(obj) => unsafe { (*obj.as_ptr()).kind == ObjKind::Str },
+            Value::Obj(obj) => obj.kind == ObjKind::Str,
             _ => false,
         }
     }
 
     pub fn is_fn(&self) -> bool {
         match self {
-            Value::Obj(obj) => unsafe { (*obj.as_ptr()).kind == ObjKind::Fn },
+            Value::Obj(obj) => obj.kind == ObjKind::Fn,
             _ => false,
         }
     }
 
     pub fn is_native(&self) -> bool {
         match self {
-            Value::Obj(obj) => unsafe { (*obj.as_ptr()).kind == ObjKind::Native },
+            Value::Obj(obj) => obj.kind == ObjKind::Native,
             _ => false,
         }
     }
 
-    pub fn as_bound_method_ptr(&self) -> Option<NonNull<ObjBoundMethod>> {
+    pub fn as_bound_method(&self) -> Option<Gc<ObjBoundMethod>> {
         match self {
-            Value::Obj(obj) if unsafe { (*obj.as_ptr()).kind == ObjKind::BoundMethod } => {
-                Some(obj.cast())
-            }
+            Value::Obj(obj) if obj.kind == ObjKind::BoundMethod => Some(obj.cast()),
             _ => None,
         }
     }
 
-    pub fn as_bound_method_mut(&mut self) -> Option<&mut ObjBoundMethod> {
+    pub fn as_instance_fn(&self) -> Option<Gc<ObjInstance>> {
         match *self {
-            Value::Obj(obj) => unsafe {
-                let kind = (*obj.as_ptr()).kind;
-                match kind {
-                    ObjKind::BoundMethod => Some(obj.cast().as_mut()),
-                    _ => None,
-                }
-            },
-            _ => None,
-        }
-    }
-    pub fn as_bound_method(&self) -> Option<&ObjBoundMethod> {
-        match *self {
-            Value::Obj(obj) => unsafe {
-                let kind = (*obj.as_ptr()).kind;
-                match kind {
-                    ObjKind::BoundMethod => Some(obj.cast().as_ref()),
-                    _ => None,
-                }
-            },
+            Value::Obj(obj) if obj.kind == ObjKind::Instance => Some(obj.cast()),
             _ => None,
         }
     }
 
-    pub fn as_instance_ptr(&self) -> Option<NonNull<ObjInstance>> {
+    pub fn as_class(&self) -> Option<Gc<ObjClass>> {
+        match *self {
+            Value::Obj(obj) if obj.kind == ObjKind::Class => Some(obj.cast()),
+            _ => None,
+        }
+    }
+
+    pub fn as_fn(&self) -> Option<Gc<ObjFunction>> {
+        match *self {
+            Value::Obj(obj) if obj.kind == ObjKind::Fn => Some(obj.cast()),
+            _ => None,
+        }
+    }
+
+    pub fn as_obj_native(&self) -> Option<Gc<ObjNative>> {
+        match *self {
+            Value::Obj(obj) if obj.kind == ObjKind::Native => Some(obj.cast()),
+            _ => None,
+        }
+    }
+
+    pub fn as_obj_closure(&self) -> Option<Gc<ObjClosure>> {
         match self {
-            Value::Obj(obj) if unsafe { (*obj.as_ptr()).kind == ObjKind::Instance } => {
-                Some(obj.cast())
-            }
+            Value::Obj(obj) if obj.kind == ObjKind::Closure => Some(obj.cast()),
             _ => None,
         }
     }
 
-    pub fn as_instance_fn_mut(&mut self) -> Option<&mut ObjInstance> {
+    pub fn as_obj_str(&self) -> Option<Gc<ObjString>> {
         match *self {
-            Value::Obj(obj) => unsafe {
-                let kind = (*obj.as_ptr()).kind;
-                match kind {
-                    ObjKind::Instance => Some(obj.cast().as_mut()),
-                    _ => None,
-                }
-            },
-            _ => None,
-        }
-    }
-    pub fn as_instance_fn(&self) -> Option<&ObjInstance> {
-        match *self {
-            Value::Obj(obj) => unsafe {
-                let kind = (*obj.as_ptr()).kind;
-                match kind {
-                    ObjKind::Instance => Some(obj.cast().as_ref()),
-                    _ => None,
-                }
-            },
+            Value::Obj(obj) if obj.kind == ObjKind::Str => Some(obj.cast()),
             _ => None,
         }
     }
 
-    pub fn as_class_ptr(&self) -> Option<NonNull<ObjClass>> {
-        match self {
-            Value::Obj(obj) if unsafe { (*obj.as_ptr()).kind == ObjKind::Class } => {
-                Some(obj.cast())
-            }
-            _ => None,
-        }
-    }
-
-    pub fn as_class(&self) -> Option<&ObjClass> {
-        match *self {
-            Value::Obj(obj) => unsafe {
-                let kind = (*obj.as_ptr()).kind;
-                match kind {
-                    ObjKind::Class => Some(obj.cast().as_ref()),
-                    _ => None,
-                }
-            },
-            _ => None,
-        }
-    }
-
-    pub fn as_class_mut(&mut self) -> Option<&mut ObjClass> {
-        match *self {
-            Value::Obj(obj) => unsafe {
-                let kind = (*obj.as_ptr()).kind;
-                match kind {
-                    ObjKind::Class => Some(obj.cast().as_mut()),
-                    _ => None,
-                }
-            },
-            _ => None,
-        }
-    }
-
-    pub fn as_fn_ptr(&self) -> Option<NonNull<ObjFunction>> {
-        match self {
-            Value::Obj(obj) if unsafe { (*obj.as_ptr()).kind == ObjKind::Fn } => Some(obj.cast()),
-            _ => None,
-        }
-    }
-
-    pub fn as_obj_fn(&self) -> Option<&ObjFunction> {
-        match *self {
-            Value::Obj(obj) => unsafe {
-                let kind = (*obj.as_ptr()).kind;
-                match kind {
-                    ObjKind::Fn => Some(obj.cast().as_ref()),
-                    _ => None,
-                }
-            },
-            _ => None,
-        }
-    }
-
-    pub fn as_native_ptr(&self) -> Option<NonNull<ObjNative>> {
-        match self {
-            Value::Obj(obj) if unsafe { (*obj.as_ptr()).kind == ObjKind::Native } => {
-                Some(obj.cast())
-            }
-            _ => None,
-        }
-    }
-
-    pub fn as_obj_native(&self) -> Option<&ObjNative> {
-        match *self {
-            Value::Obj(obj) => unsafe {
-                let kind = (*obj.as_ptr()).kind;
-                match kind {
-                    ObjKind::Native => Some(obj.cast().as_ref()),
-                    _ => None,
-                }
-            },
-            _ => None,
-        }
-    }
-
-    pub fn as_closure_ptr(&self) -> Option<NonNull<ObjClosure>> {
-        match self {
-            Value::Obj(obj) if unsafe { (*obj.as_ptr()).kind == ObjKind::Closure } => {
-                Some(obj.cast())
-            }
-            _ => None,
-        }
-    }
-
-    pub fn as_obj_closure(&self) -> Option<&ObjClosure> {
-        match *self {
-            Value::Obj(obj) => unsafe {
-                let kind = (*obj.as_ptr()).kind;
-                match kind {
-                    ObjKind::Closure => Some(obj.cast().as_ref()),
-                    _ => None,
-                }
-            },
-            _ => None,
-        }
-    }
-
-    pub fn as_obj_str_ptr(&self) -> Option<NonNull<ObjString>> {
-        match *self {
-            Value::Obj(obj) if unsafe { obj.as_ref().kind == ObjKind::Str } => Some(obj.cast()),
-            _ => None,
-        }
-    }
-
-    pub fn as_obj_str(&self) -> Option<&ObjString> {
-        match *self {
-            Value::Obj(obj) => unsafe {
-                let kind = obj.as_ref().kind;
-                match kind {
-                    ObjKind::Str => Some(obj.cast().as_ref()),
-                    _ => None,
-                }
-            },
-            _ => None,
-        }
-    }
-
-    pub fn as_str(&self) -> Option<&str> {
-        match *self {
-            Value::Obj(obj) => unsafe {
-                let kind = obj.as_ref().kind;
-                match kind {
-                    ObjKind::Str => Some(obj.cast::<ObjString>().as_ref().as_str()),
-                    _ => None,
-                }
-            },
-            _ => None,
-        }
+    pub fn as_str<'a>(&'a self) -> Option<&'a str> {
+        let noob = self.as_obj_str()?;
+        Some(unsafe { (*noob.as_ptr()).as_str() })
     }
 
     #[inline]

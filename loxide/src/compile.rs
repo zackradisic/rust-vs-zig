@@ -5,7 +5,7 @@ use std::{
 
 use crate::{
     chunk::{Chunk, Opcode},
-    mem::Mem,
+    mem::{Gc, Mem},
     obj::ObjFunction,
     value::Value,
 };
@@ -143,7 +143,7 @@ impl ClassCompiler {
 }
 
 pub struct Compiler<'src> {
-    pub function: NonNull<ObjFunction>,
+    pub function: Gc<ObjFunction>,
     enclosing: Option<Box<Compiler<'src>>>,
     class_compiler: Option<Box<ClassCompiler>>,
     function_kind: FunctionKind,

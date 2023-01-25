@@ -7,7 +7,7 @@ use std::{
 
 use crate::{
     chunk::{InstructionDebug, Opcode},
-    mem::{Greystack, Mem},
+    mem::{Gc, Greystack, Mem},
     native_fn::NativeFnKind,
     obj::{
         Obj, ObjBoundMethod, ObjClass, ObjClosure, ObjFunction, ObjInstance, ObjKind, ObjNative,
@@ -39,7 +39,7 @@ pub struct CallFrame {
     /// index into VM's value stack at the first slot this function can use
     pub slots_offset: u32,
 
-    pub closure: NonNull<ObjClosure>,
+    pub closure: Gc<ObjClosure>,
 }
 
 impl CallFrame {
@@ -74,14 +74,14 @@ pub struct VM<'b> {
     pub mem: Mem,
     pub grey_stack: Greystack,
 
-    pub init_string: NonNull<ObjString>,
+    pub init_string: Gc<ObjString>,
 }
 
 impl<'b> VM<'b> {
     pub fn new(
         stack: &'b mut [MaybeUninit<Value>; STACK_MAX],
         mut mem: Mem,
-        function: NonNull<ObjFunction>,
+        function: Gc<ObjFunction>,
     ) -> Self {
         let closure = mem.alloc_obj(ObjClosure::new(function));
 
@@ -168,7 +168,7 @@ impl<'b> VM<'b> {
             }
 
             self.mem.obj_list.remove(i);
-            Obj::free(obj_ptr)
+            Obj::free(obj_ptr.as_non_null_ptr())
         }
     }
 
@@ -178,7 +178,7 @@ impl<'b> VM<'b> {
         }
 
         for frame in self.iter_frames() {
-            unsafe { Obj::mark(frame.closure.cast().as_ptr(), greystack) }
+            unsafe { Obj::mark(frame.closure.cast::<Obj>().as_ptr(), greystack) }
         }
 
         let mut upvalue = self.open_upvalues;
@@ -222,7 +222,7 @@ impl<'b> VM<'b> {
         }
     }
 
-    fn alloc_obj<T: ObjPunnable>(&mut self, obj: T) -> NonNull<T> {
+    fn alloc_obj<T: ObjPunnable>(&mut self, obj: T) -> Gc<T> {
         if self.mem.should_run_gc::<T>() {
             #[cfg(feature = "debug_gc")]
             println!("Allocated a {:?}, now collecting garbage", obj.kind());
@@ -232,13 +232,13 @@ impl<'b> VM<'b> {
         self.mem.alloc_obj(obj)
     }
 
-    fn alloc_obj_string(&mut self, obj_string: ObjString) -> NonNull<ObjString> {
+    fn alloc_obj_string(&mut self, obj_string: ObjString) -> Gc<ObjString> {
         let ptr = self.alloc_obj(obj_string);
-        self.mem.intern_string(ptr);
+        self.mem.intern_string(ptr.as_non_null_ptr());
         ptr
     }
 
-    fn take_string(&mut self, chars: NonNull<u8>, len: u32) -> NonNull<ObjString> {
+    fn take_string(&mut self, chars: NonNull<u8>, len: u32) -> Gc<ObjString> {
         let hash = ObjHash::hash_string(unsafe {
             std::str::from_utf8_unchecked(std::slice::from_raw_parts(chars.as_ptr(), len as usize))
         });
@@ -264,7 +264,7 @@ impl<'b> VM<'b> {
 
     #[cfg(debug_assertions)]
     /// Only to be used for debugging purposes
-    pub fn get_string(&mut self, string: &str) -> NonNull<ObjString> {
+    pub fn get_string(&mut self, string: &str) -> Gc<ObjString> {
         self.mem.copy_string(string)
     }
 
@@ -380,7 +380,7 @@ impl<'b> VM<'b> {
         self.push(Value::Obj(obj_str.cast()))
     }
 
-    fn call(&mut self, closure: NonNull<ObjClosure>, arg_count: u8) -> bool {
+    fn call(&mut self, closure: Gc<ObjClosure>, arg_count: u8) -> bool {
         let arity = unsafe { closure.as_ref().function.as_ref().arity };
         if arg_count != arity {
             self.runtime_error(format!("Expected {arg_count} arguments but got {arity}.").into());
@@ -412,8 +412,9 @@ impl<'b> VM<'b> {
             self.mem.globals.set(
                 self.stack[self.stack_top as usize - 2]
                     .assume_init()
-                    .as_obj_str_ptr()
-                    .unwrap(),
+                    .as_obj_str()
+                    .unwrap()
+                    .as_non_null_ptr(),
                 self.stack[self.stack_top as usize - 1].assume_init(),
             );
         }
@@ -428,15 +429,17 @@ impl<'b> VM<'b> {
                 let kind = unsafe { obj.as_ref().kind };
                 match kind {
                     ObjKind::Class => {
-                        let class: NonNull<ObjClass> = obj.cast();
+                        let class: Gc<ObjClass> = obj.cast();
                         let instance = self.alloc_obj(ObjInstance::new(class));
                         self.stack[self.stack_top as usize - arg_count as usize - 1] =
                             MaybeUninit::new(Value::Obj(instance.cast()));
 
-                        if let Some(initializer) =
-                            unsafe { class.as_ref() }.methods.get(self.init_string)
+                        if let Some(initializer) = class
+                            .as_ref()
+                            .methods
+                            .get(self.init_string.as_non_null_ptr())
                         {
-                            return self.call(initializer.as_closure_ptr().unwrap(), arg_count);
+                            return self.call(initializer.as_obj_closure().unwrap(), arg_count);
                         }
 
                         if arg_count != 0 {
@@ -450,7 +453,7 @@ impl<'b> VM<'b> {
                     }
                     ObjKind::Closure => return self.call(obj.cast(), arg_count),
                     ObjKind::Native => {
-                        let native: NonNull<ObjNative> = obj.cast();
+                        let native: Gc<ObjNative> = obj.cast();
                         let stack_begin = self.stack_top as usize - arg_count as usize;
                         let values = &self.stack[stack_begin..];
                         let result =
@@ -461,10 +464,10 @@ impl<'b> VM<'b> {
                         return true;
                     }
                     ObjKind::BoundMethod => {
-                        let bound: NonNull<ObjBoundMethod> = obj.cast();
+                        let bound: Gc<ObjBoundMethod> = obj.cast();
                         self.stack[self.stack_top as usize - arg_count as usize - 1] =
                             MaybeUninit::new(unsafe { bound.as_ref() }.receiver);
-                        return self.call(unsafe { bound.as_ref() }.method, arg_count);
+                        return self.call(bound.method, arg_count);
                     }
                     _ => (),
                 }
@@ -476,7 +479,7 @@ impl<'b> VM<'b> {
         false
     }
 
-    fn capture_upvalue(&mut self, offset: u8) -> NonNull<ObjUpvalue> {
+    fn capture_upvalue(&mut self, offset: u8) -> Gc<ObjUpvalue> {
         let slot = self.top_call_frame().slots_offset;
 
         let local = NonNull::new(self.stack[slot as usize + offset as usize].as_mut_ptr()).unwrap();
@@ -495,7 +498,9 @@ impl<'b> VM<'b> {
 
             match NonNull::new(upvalue) {
                 // found a captured upvalue, reuse it
-                Some(upvalue_nonnull) if (*upvalue).location == local => return upvalue_nonnull,
+                Some(upvalue_nonnull) if (*upvalue).location == local => {
+                    return Gc::new(upvalue_nonnull)
+                }
                 _ => (),
             }
 
@@ -513,7 +518,7 @@ impl<'b> VM<'b> {
         }
     }
 
-    fn new_closure(&mut self, function: NonNull<ObjFunction>) {
+    fn new_closure(&mut self, function: Gc<ObjFunction>) {
         let closure = self.alloc_obj(ObjClosure::new(function));
         self.push(Value::Obj(closure.cast()));
         unsafe {
@@ -568,28 +573,27 @@ impl<'b> VM<'b> {
         }
     }
 
-    fn define_method(&mut self, name: NonNull<ObjString>) {
+    fn define_method(&mut self, name: Gc<ObjString>) {
         let method = self.peek(0);
-        let mut class_value = self.peek(1);
-        let class = class_value.as_class_mut().unwrap();
-        class.methods.set(name, method);
+        let class_value = self.peek(1);
+        let mut class = class_value.as_class().unwrap();
+        let class = class.as_mut();
+        class.methods.set(name.as_non_null_ptr(), method);
         self.pop();
     }
 
-    fn bind_method(&mut self, class: NonNull<ObjClass>, name: NonNull<ObjString>) -> bool {
-        let method = match unsafe { (*class.as_ptr()).methods.get(name) } {
+    fn bind_method(&mut self, class: Gc<ObjClass>, name: Gc<ObjString>) -> bool {
+        let method = match class.methods.get(name.as_non_null_ptr()) {
             Some(method) => method,
             None => {
-                self.runtime_error(
-                    format!("Undefined property {}", unsafe { name.as_ref() }.as_str()).into(),
-                );
+                self.runtime_error(format!("Undefined property {}", name.as_str()).into());
 
                 return false;
             }
         };
 
         let receiver = self.peek(0);
-        let bound = ObjBoundMethod::new(receiver, method.as_closure_ptr().unwrap());
+        let bound = ObjBoundMethod::new(receiver, method.as_obj_closure().unwrap());
         let bound = self.alloc_obj(bound);
 
         self.pop();
@@ -598,7 +602,7 @@ impl<'b> VM<'b> {
         true
     }
 
-    fn invoke(&mut self, name: NonNull<ObjString>, arg_count: u8) -> bool {
+    fn invoke(&mut self, name: Gc<ObjString>, arg_count: u8) -> bool {
         let receiver = self.peek(arg_count as u32);
         let instance = match receiver.as_instance_fn() {
             Some(inst) => inst,
@@ -608,7 +612,7 @@ impl<'b> VM<'b> {
             }
         };
 
-        if let Some(field) = instance.fields.get(name) {
+        if let Some(field) = instance.fields.get(name.as_non_null_ptr()) {
             self.stack[self.stack_top as usize - arg_count as usize - 1] = MaybeUninit::new(field);
             return self.call_value(field, arg_count);
         }
@@ -618,20 +622,18 @@ impl<'b> VM<'b> {
 
     fn invoke_from_class(
         &mut self,
-        class: NonNull<ObjClass>,
-        name: NonNull<ObjString>,
+        class: Gc<ObjClass>,
+        name: Gc<ObjString>,
         arg_count: u8,
     ) -> bool {
-        let method = unsafe { class.as_ref() }.methods.get(name);
+        let method = class.methods.get(name.as_non_null_ptr());
         match method {
             Some(method) => {
-                self.call(method.as_closure_ptr().unwrap(), arg_count);
+                self.call(method.as_obj_closure().unwrap(), arg_count);
                 true
             }
             None => {
-                self.runtime_error(
-                    format!("Undefined property {}", unsafe { name.as_ref() }.as_str()).into(),
-                );
+                self.runtime_error(format!("Undefined property {}", name.as_str()).into());
                 false
             }
         }
@@ -662,9 +664,9 @@ impl<'b> VM<'b> {
 
             match Opcode::from_u8(byte) {
                 Some(Opcode::SuperInvoke) => {
-                    let method = self.read_constant().as_obj_str_ptr().unwrap();
+                    let method = self.read_constant().as_obj_str().unwrap();
                     let arg_count = self.read_byte();
-                    let superclass = self.pop().as_class_ptr().unwrap();
+                    let superclass = self.pop().as_class().unwrap();
 
                     if !self.invoke_from_class(superclass, method, arg_count) {
                         return Err(InterpretError::RuntimeError);
@@ -672,9 +674,9 @@ impl<'b> VM<'b> {
                 }
                 Some(Opcode::GetSuper) => {
                     // The name of the class
-                    let name = self.read_constant().as_obj_str_ptr().unwrap();
+                    let name = self.read_constant().as_obj_str().unwrap();
 
-                    let superclass = self.pop().as_class_ptr().unwrap();
+                    let superclass = self.pop().as_class().unwrap();
 
                     if !self.bind_method(superclass, name) {
                         return Err(InterpretError::RuntimeError);
@@ -691,26 +693,26 @@ impl<'b> VM<'b> {
                     };
 
                     let mut subclass = self.peek(0);
-                    let subclass = subclass.as_class_mut().unwrap();
+                    let mut subclass = subclass.as_class().unwrap();
 
                     superclass.methods.add_all(&mut subclass.methods);
 
                     self.pop();
                 }
                 Some(Opcode::Invoke) => {
-                    let method = self.read_constant().as_obj_str_ptr().unwrap();
+                    let method = self.read_constant().as_obj_str().unwrap();
                     let arg_count = self.read_byte();
                     if !self.invoke(method, arg_count) {
                         return Err(InterpretError::RuntimeError);
                     }
                 }
                 Some(Opcode::Method) => {
-                    let obj_str = self.read_constant().as_obj_str_ptr().unwrap();
+                    let obj_str = self.read_constant().as_obj_str().unwrap();
                     self.define_method(obj_str)
                 }
                 Some(Opcode::GetProperty) => {
                     let top = self.peek(0);
-                    let instance = match top.as_instance_ptr() {
+                    let instance = match top.as_instance_fn() {
                         Some(instance) => instance,
                         None => {
                             self.runtime_error("Only instances have properties.".into());
@@ -720,10 +722,10 @@ impl<'b> VM<'b> {
 
                     let name = self
                         .read_constant()
-                        .as_obj_str_ptr()
+                        .as_obj_str()
                         .expect("Expect to read a string constant.");
 
-                    match unsafe { &*instance.as_ptr() }.fields.get(name) {
+                    match instance.fields.get(name.as_non_null_ptr()) {
                         Some(val) => {
                             self.pop();
                             self.push(val);
@@ -737,7 +739,7 @@ impl<'b> VM<'b> {
                 }
                 Some(Opcode::SetProperty) => {
                     let mut top = self.peek(1);
-                    let instance = match top.as_instance_fn_mut() {
+                    let mut instance = match top.as_instance_fn() {
                         Some(instance) => instance,
                         None => {
                             self.runtime_error("Only instances have fields.".into());
@@ -747,10 +749,12 @@ impl<'b> VM<'b> {
 
                     let field_name = self
                         .read_constant()
-                        .as_obj_str_ptr()
+                        .as_obj_str()
                         .expect("Expect to string constant");
 
-                    instance.fields.set(field_name, self.peek(0));
+                    instance
+                        .fields
+                        .set(field_name.as_non_null_ptr(), self.peek(0));
 
                     let value = self.pop();
                     self.pop();
@@ -759,10 +763,10 @@ impl<'b> VM<'b> {
                 Some(Opcode::Class) => {
                     let name = self
                         .read_constant()
-                        .as_obj_str_ptr()
+                        .as_obj_str()
                         .expect("Opcode::Class instruction should be followed by string constant");
 
-                    let class = ObjClass::new(name);
+                    let class = ObjClass::new(name.as_non_null_ptr());
                     let class = self.alloc_obj(class);
 
                     self.push(Value::Obj(class.cast()));
@@ -804,7 +808,7 @@ impl<'b> VM<'b> {
                     }
                 }
                 Some(Opcode::Closure) => {
-                    let function = self.read_constant().as_fn_ptr().unwrap();
+                    let function = self.read_constant().as_fn().unwrap();
                     self.new_closure(function);
                     // TODO: investigate
                     // let closure = self.alloc_obj();
@@ -849,18 +853,15 @@ impl<'b> VM<'b> {
                 Some(Opcode::SetGlobal) => {
                     let name = self
                         .read_constant()
-                        .as_obj_str_ptr()
+                        .as_obj_str()
                         .expect("Expect string constant for global variable name.");
 
                     let new_val = self.peek(0);
                     // println!("{} = {:?}", unsafe { name.as_ref() }.as_str(), self.peek(0));
 
-                    if self.mem.globals.set(name, new_val) {
-                        self.mem.globals.delete(name);
-                        self.runtime_error(
-                            format!("Undefined variable: {}", unsafe { name.as_ref().as_str() })
-                                .into(),
-                        );
+                    if self.mem.globals.set(name.as_non_null_ptr(), new_val) {
+                        self.mem.globals.delete(name.as_non_null_ptr());
+                        self.runtime_error(format!("Undefined variable: {}", name.as_str()).into());
 
                         return Err(InterpretError::RuntimeError);
                     }
@@ -868,17 +869,14 @@ impl<'b> VM<'b> {
                 Some(Opcode::GetGlobal) => {
                     let name = self
                         .read_constant()
-                        .as_obj_str_ptr()
+                        .as_obj_str()
                         .expect("Expect string constant for global variable name.");
 
-                    let val = match self.mem.globals.get(name) {
+                    let val = match self.mem.globals.get(name.as_non_null_ptr()) {
                         Some(global) => global,
                         None => {
                             self.runtime_error(
-                                format!("Undefined variable: {}", unsafe {
-                                    name.as_ref().as_str()
-                                })
-                                .into(),
+                                format!("Undefined variable: {}", name.as_str()).into(),
                             );
 
                             return Err(InterpretError::RuntimeError);
@@ -890,10 +888,10 @@ impl<'b> VM<'b> {
                 Some(Opcode::DefineGlobal) => {
                     let name = self
                         .read_constant()
-                        .as_obj_str_ptr()
+                        .as_obj_str()
                         .expect("Expect string constant for global variable name.");
 
-                    self.mem.globals.set(name, self.peek(0));
+                    self.mem.globals.set(name.as_non_null_ptr(), self.peek(0));
                     self.pop();
                 }
                 Some(Opcode::Nil) => {
@@ -973,7 +971,7 @@ impl<'b> VM<'b> {
     }
 
     #[inline]
-    fn next_call_frame(&mut self, closure: NonNull<ObjClosure>, arg_count: u8) {
+    fn next_call_frame(&mut self, closure: Gc<ObjClosure>, arg_count: u8) {
         let call_frame = self.call_frames[self.call_frame_count as usize].as_mut_ptr();
         self.call_frame_count += 1;
         unsafe {

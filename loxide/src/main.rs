@@ -113,7 +113,7 @@ var result = cruller.finish("noice");
 
         let mut stack: ValueStack = [MaybeUninit::uninit(); STACK_MAX];
         let mut vm = interpret(&mut stack, src).unwrap();
-        let result_var_str = vm.get_string("result");
+        let result_var_str = vm.get_string("result").as_non_null_ptr();
         let value = vm.mem.globals.get(result_var_str);
         assert_eq!(value.unwrap().as_str().unwrap(), "Finish with icing");
     }
@@ -137,7 +137,7 @@ var result = cruller.finish("noice");
 
         let mut stack: ValueStack = [MaybeUninit::uninit(); STACK_MAX];
         let mut vm = interpret(&mut stack, src).unwrap();
-        let result_str = vm.get_string("result");
+        let result_str = vm.get_string("result").as_non_null_ptr();
         let value = vm.mem.globals.get(result_str);
         assert_eq!(value, Some(Value::Number(420.0)));
     }
@@ -176,7 +176,7 @@ var result = cruller.finish("noice");
 
         let mut stack: ValueStack = [MaybeUninit::uninit(); STACK_MAX];
         let mut vm = interpret(&mut stack, src).unwrap();
-        let result_str = vm.get_string("result");
+        let result_str = vm.get_string("result").as_non_null_ptr();
         let value = vm.mem.globals.get(result_str);
         assert_eq!(value, Some(Value::Number(420.0)));
     }
@@ -196,7 +196,7 @@ var result = cruller.finish("noice");
 
         let mut stack: ValueStack = [MaybeUninit::uninit(); STACK_MAX];
         let mut vm = interpret(&mut stack, src).unwrap();
-        let result_str = vm.get_string("result");
+        let result_str = vm.get_string("result").as_non_null_ptr();
         let value = vm.mem.globals.get(result_str);
         assert_eq!(value, Some(Value::Number(420.0)));
     }
@@ -215,7 +215,7 @@ var result = cruller.finish("noice");
         let mut stack: ValueStack = [MaybeUninit::uninit(); STACK_MAX];
         let mut vm = interpret(&mut stack, src).unwrap();
 
-        let result_str = vm.get_string("result");
+        let result_str = vm.get_string("result").as_non_null_ptr();
 
         let value = vm.mem.globals.get(result_str);
 
@@ -236,7 +236,7 @@ var result = pair.first + pair.second;"#;
         let mut stack: ValueStack = [MaybeUninit::uninit(); STACK_MAX];
         let mut vm = interpret(&mut stack, src).unwrap();
 
-        let result_str = vm.get_string("result");
+        let result_str = vm.get_string("result").as_non_null_ptr();
 
         let value = vm.mem.globals.get(result_str);
 
@@ -263,9 +263,9 @@ var result = pair.first + pair.second;"#;
         let mut stack: ValueStack = [MaybeUninit::uninit(); STACK_MAX];
         let mut vm = interpret(&mut stack, src).unwrap();
 
-        let first_str = vm.get_string("first");
-        let second_str = vm.get_string("second");
-        let third_str = vm.get_string("third");
+        let first_str = vm.get_string("first").as_non_null_ptr();
+        let second_str = vm.get_string("second").as_non_null_ptr();
+        let third_str = vm.get_string("third").as_non_null_ptr();
 
         let value1 = vm.mem.globals.get(first_str);
         let value2 = vm.mem.globals.get(second_str);
@@ -290,7 +290,7 @@ var result = pair.first + pair.second;"#;
     var value = outer();"#;
         let mut stack: ValueStack = [MaybeUninit::uninit(); STACK_MAX];
         let mut vm = interpret(&mut stack, src).unwrap();
-        let value_str = vm.get_string("value");
+        let value_str = vm.get_string("value").as_non_null_ptr();
 
         let value = vm.mem.globals.get(value_str);
 
@@ -311,7 +311,7 @@ fun outer() {
 outer();"#;
         let mut stack: ValueStack = [MaybeUninit::uninit(); STACK_MAX];
         let mut vm = interpret(&mut stack, src).unwrap();
-        let result_str = vm.get_string("result");
+        let result_str = vm.get_string("result").as_non_null_ptr();
         let value = vm.mem.globals.get(result_str);
 
         assert_eq!(value, Some(Value::Number(420.0)));
@@ -323,7 +323,7 @@ outer();"#;
         var num = __dummy();"#;
         let mut stack: ValueStack = [MaybeUninit::uninit(); STACK_MAX];
         let mut vm = interpret(&mut stack, src).unwrap();
-        let num_str = vm.get_string("num");
+        let num_str = vm.get_string("num").as_non_null_ptr();
         let value = vm.mem.globals.get(num_str);
         assert_eq!(value, Some(Value::Number(420.0)));
     }
@@ -344,7 +344,7 @@ outer();"#;
             num = add420(num);"#;
         let mut stack: ValueStack = [MaybeUninit::uninit(); STACK_MAX];
         let mut vm = interpret(&mut stack, src).unwrap();
-        let num_str = vm.get_string("num");
+        let num_str = vm.get_string("num").as_non_null_ptr();
         let value = vm.mem.globals.get(num_str);
         assert_eq!(value, Some(Value::Number(910.0)));
     }
@@ -370,7 +370,7 @@ outer();"#;
         let mut stack: ValueStack = [MaybeUninit::uninit(); STACK_MAX];
         let mut vm = interpret(&mut stack, src).unwrap();
 
-        let noob = vm.get_string("noob");
+        let noob = vm.get_string("noob").as_non_null_ptr();
         let top = vm.mem.globals.get(noob);
         assert_eq!(top.unwrap().as_str(), Some("NICE"));
     }
@@ -384,7 +384,7 @@ outer();"#;
         let mut stack: ValueStack = [MaybeUninit::uninit(); STACK_MAX];
         let mut vm = interpret(&mut stack, src).unwrap();
 
-        let noob = vm.get_string("noob");
+        let noob = vm.get_string("noob").as_non_null_ptr();
         let top = vm.mem.globals.get(noob);
         assert_eq!(top.unwrap().as_str(), Some("NICE"));
     }
@@ -400,7 +400,7 @@ outer();"#;
         let mut stack: ValueStack = [MaybeUninit::uninit(); STACK_MAX];
         let mut vm = interpret(&mut stack, src).unwrap();
 
-        let noob = vm.get_string("noob");
+        let noob = vm.get_string("noob").as_non_null_ptr();
         let top = vm.mem.globals.get(noob);
         assert_eq!(top, Some(Value::Number(10.0)));
     }
@@ -430,7 +430,7 @@ outer();"#;
         let mut stack: ValueStack = [MaybeUninit::uninit(); STACK_MAX];
         let mut vm = interpret(&mut stack, src).unwrap();
 
-        let noob = vm.get_string("global");
+        let noob = vm.get_string("global").as_non_null_ptr();
         let top = vm.mem.globals.get(noob);
         assert_eq!(top.unwrap().as_str(), Some("NICE"));
     }
@@ -441,7 +441,7 @@ outer();"#;
         let mut stack: ValueStack = [MaybeUninit::uninit(); STACK_MAX];
         let mut vm = interpret(&mut stack, src).unwrap();
 
-        let noob = vm.get_string("noob");
+        let noob = vm.get_string("noob").as_non_null_ptr();
         let top = vm.mem.globals.get(noob);
         assert_eq!(top.unwrap().as_str(), Some("hello sir sir"));
     }
@@ -458,7 +458,7 @@ outer();"#;
         let mut mem = Mem::new();
         let mut table = Table::new();
 
-        let key = mem.copy_string("bagel");
+        let key = mem.copy_string("bagel").as_non_null_ptr();
         assert_eq!(table.set(key, Value::Number(420.0)), true);
         assert_eq!(table.set(key, Value::Number(69.0)), false);
         assert_eq!(table.get(key), Some(Value::Number(69.0)));

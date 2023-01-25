@@ -1,5 +1,6 @@
 use std::{
     alloc::{self, handle_alloc_error, Layout},
+    ops::{Deref, DerefMut},
     ptr::{self, NonNull},
 };
 
@@ -81,15 +82,15 @@ impl Mem {
     }
 
     #[inline]
-    pub fn alloc_obj_string(&mut self, obj_string: ObjString) -> NonNull<ObjString> {
+    pub fn alloc_obj_string(&mut self, obj_string: ObjString) -> Gc<ObjString> {
         let obj_string = self.alloc_obj(obj_string);
-        self.intern_string(obj_string);
+        self.intern_string(obj_string.as_non_null_ptr());
         obj_string
     }
 
     #[inline]
-    pub fn alloc_obj<T: ObjPunnable>(&mut self, obj: T) -> NonNull<T> {
-        let val = unsafe { NonNull::new_unchecked(Box::into_raw(Box::new(obj))) };
+    pub fn alloc_obj<T: ObjPunnable>(&mut self, obj: T) -> Gc<T> {
+        let val = Gc::new(unsafe { NonNull::new_unchecked(Box::into_raw(Box::new(obj))) });
         self.obj_list.push_front(val.cast());
 
         self.bytes_allocated += std::mem::size_of::<T>();
@@ -110,7 +111,7 @@ impl Mem {
         self.interned_strings.set(obj_string, Value::Nil);
     }
 
-    pub fn copy_string(&mut self, string: &str) -> NonNull<ObjString> {
+    pub fn copy_string(&mut self, string: &str) -> Gc<ObjString> {
         let hash = ObjHash::hash_string(string);
         match self.interned_strings.find_string(string, hash) {
             Some(interned) => return interned,
@@ -144,10 +145,79 @@ impl Drop for Mem {
     fn drop(&mut self) {
         // free obj list
         for obj in self.obj_list.iter_mut() {
-            Obj::free(*obj)
+            Obj::free(obj.as_non_null_ptr())
         }
 
         Table::free(&mut self.interned_strings);
         Table::free(&mut self.globals);
+    }
+}
+
+#[repr(transparent)]
+pub struct Gc<T> {
+    inner: NonNull<T>,
+}
+
+impl<T> Gc<T> {
+    pub fn new(inner: NonNull<T>) -> Self {
+        Self { inner }
+    }
+
+    #[inline]
+    pub fn as_ptr(self) -> *mut T {
+        self.inner.as_ptr()
+    }
+
+    #[inline]
+    pub fn as_non_null_ptr(self) -> NonNull<T> {
+        self.inner
+    }
+
+    #[inline]
+    pub fn cast<K>(self) -> Gc<K> {
+        Gc::new(self.inner.cast())
+    }
+}
+
+impl<T> std::fmt::Debug for Gc<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Gc").field("inner", &self.inner).finish()
+    }
+}
+impl<T> Copy for Gc<T> {}
+impl<T> Clone for Gc<T> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+        }
+    }
+}
+
+impl AsRef<str> for Gc<ObjString> {
+    fn as_ref(&self) -> &str {
+        unsafe { self.inner.as_ref().as_str() }
+    }
+}
+impl<T> AsRef<T> for Gc<T> {
+    fn as_ref(&self) -> &T {
+        unsafe { self.inner.as_ref() }
+    }
+}
+impl<T> AsMut<T> for Gc<T> {
+    fn as_mut(&mut self) -> &mut T {
+        unsafe { self.inner.as_mut() }
+    }
+}
+impl<T> Deref for Gc<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        unsafe { self.inner.as_ref() }
+    }
+}
+
+impl<T> DerefMut for Gc<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        unsafe { self.inner.as_mut() }
     }
 }

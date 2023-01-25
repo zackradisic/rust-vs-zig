@@ -1,7 +1,7 @@
 use std::ptr::{null_mut, NonNull};
 
 use crate::{
-    mem::Greystack,
+    mem::{Gc, Greystack},
     obj::{Obj, ObjString},
     value::Value,
 };
@@ -282,7 +282,7 @@ impl Table {
         }
     }
 
-    pub fn find_string(&self, string: &str, hash: ObjHash) -> Option<NonNull<ObjString>> {
+    pub fn find_string(&self, string: &str, hash: ObjHash) -> Option<Gc<ObjString>> {
         if self.len == 0 {
             return None;
         }
@@ -305,7 +305,7 @@ impl Table {
                     && (*entry.key).hash == hash
                     && (*entry.key).as_str() == string
                 {
-                    return Some(NonNull::new_unchecked(entry.key));
+                    return Some(Gc::new(NonNull::new_unchecked(entry.key)));
                 }
 
                 index = (index + 1) & (self.cap - 1);
