@@ -292,7 +292,7 @@ impl Table {
             None => return None,
         };
 
-        let mut index = hash.0 % self.cap;
+        let mut index = hash.0 & (self.cap - 1);
 
         unsafe {
             loop {
@@ -308,13 +308,13 @@ impl Table {
                     return Some(NonNull::new_unchecked(entry.key));
                 }
 
-                index = (index + 1) % self.cap;
+                index = (index + 1) & (self.cap - 1);
             }
         }
     }
 
     fn find_entry_from_ptr(entries: *mut Entry, cap: u32, key: NonNull<ObjString>) -> *mut Entry {
-        let mut index = unsafe { (*key.as_ptr()).hash.0 } % cap;
+        let mut index = unsafe { (*key.as_ptr()).hash.0 } & (cap - 1);
         let mut tombstone: *mut Entry = null_mut();
 
         loop {
@@ -334,7 +334,7 @@ impl Table {
                     return entry;
                 }
 
-                index = (index + 1) % cap;
+                index = (index + 1) & (cap - 1);
             }
         }
     }
