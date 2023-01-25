@@ -41,9 +41,13 @@ pub enum Opcode {
     SetProperty,
     Method,
     Invoke,
+    Inherit,
+    GetSuper,
+    SuperInvoke,
 }
 
 impl Opcode {
+    #[inline]
     pub fn from_u8(val: u8) -> Option<Self> {
         use Opcode::*;
         match val {
@@ -81,6 +85,9 @@ impl Opcode {
             31 => Some(SetProperty),
             32 => Some(Method),
             33 => Some(Invoke),
+            34 => Some(Inherit),
+            35 => Some(GetSuper),
+            36 => Some(SuperInvoke),
             _ => None,
         }
     }
@@ -148,7 +155,8 @@ impl Chunk {
                 | Opcode::Multiply
                 | Opcode::Divide
                 | Opcode::Negate
-                | Opcode::Return,
+                | Opcode::Return
+                | Opcode::Inherit,
             ) => {
                 *offset += 1;
                 Some(Instruction::Simple(op.unwrap()))
@@ -161,7 +169,8 @@ impl Chunk {
                 | Opcode::Constant
                 | Opcode::DefineGlobal
                 | Opcode::GetGlobal
-                | Opcode::SetGlobal,
+                | Opcode::SetGlobal
+                | Opcode::GetSuper,
             ) => {
                 let constant_idx = self.code[*offset + 1];
                 let constant = self.constants[constant_idx as usize];
@@ -207,7 +216,7 @@ impl Chunk {
                     upvalues,
                 })
             }
-            Some(Opcode::Invoke) => {
+            Some(Opcode::Invoke | Opcode::SuperInvoke) => {
                 let method = self.code[*offset + 1];
                 let arg_count = self.code[*offset + 2];
                 let method = self.constants[method as usize];

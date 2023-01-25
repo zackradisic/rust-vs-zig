@@ -130,11 +130,15 @@ pub struct Upvalue {
 #[derive(Debug)]
 pub struct ClassCompiler {
     enclosing: Option<Box<ClassCompiler>>,
+    has_superclass: bool,
 }
 
 impl ClassCompiler {
     pub fn new(enclosing: Option<Box<ClassCompiler>>) -> Self {
-        Self { enclosing }
+        Self {
+            enclosing,
+            has_superclass: false,
+        }
     }
 }
 
@@ -394,7 +398,7 @@ impl<'a, 'src: 'a> Parser<'a, 'src> {
         // return
         none_prec!(),
         // super
-        none_prec!(),
+        parse_rule!(pre = Parser::super_, Precedence::None),
         // this
         parse_rule!(pre = Parser::this, Precedence::None),
         // true
@@ -539,6 +543,27 @@ impl<'a, 'src: 'a> Parser<'a, 'src> {
             self.compiler.class_compiler.take(),
         )));
 
+        if self.match_tok(TokenKind::Less) {
+            self.consume(TokenKind::Identifier, "Expect superclass name.");
+            self.variable(ParseRuleCtx { can_assign: false });
+
+            if class_name.msg == self.prev().msg {
+                self.error("A class can't inherit from itself.");
+            }
+
+            self.begin_scope();
+            self.add_local(&Token::synthetic("super"));
+            self.define_variable(0);
+
+            self.named_variable(class_name, ParseRuleCtx { can_assign: false });
+            self.emit_byte(Opcode::Inherit as u8);
+            self.compiler
+                .class_compiler
+                .as_mut()
+                .unwrap()
+                .has_superclass = true;
+        }
+
         self.named_variable(class_name, ParseRuleCtx { can_assign: false });
 
         self.consume(TokenKind::LeftBrace, "Expect '{' before class body.");
@@ -547,6 +572,15 @@ impl<'a, 'src: 'a> Parser<'a, 'src> {
         }
         self.consume(TokenKind::RightBrace, "Expect '}' after class body.");
         self.emit_byte(Opcode::Pop as u8);
+
+        if self
+            .compiler
+            .class_compiler
+            .as_ref()
+            .map_or(false, |c| c.has_superclass)
+        {
+            self.end_scope();
+        }
 
         self.compiler.class_compiler = self
             .compiler
@@ -1263,6 +1297,34 @@ impl<'a, 'src: 'a> Parser<'a, 'src> {
         }
         self.variable(ParseRuleCtx { can_assign: false })
     }
+
+    fn super_(&mut self, ctx: ParseRuleCtx) {
+        match self.compiler.class_compiler.as_ref() {
+            None => self.error("Can't use 'super' outside of a class."),
+            Some(class_compiler) if !class_compiler.has_superclass => {
+                self.error("Can't use 'super' in a class with no superclass.")
+            }
+            _ => (),
+        }
+
+        self.consume(TokenKind::Dot, "Expect '.' after 'super'.");
+        self.consume(TokenKind::Identifier, "Expect superclass method name.");
+        let name = self.identifier_constant(self.prev());
+
+        let ctx = ParseRuleCtx { can_assign: false };
+
+        self.named_variable(Token::synthetic("this"), ctx);
+
+        if self.match_tok(TokenKind::LeftParen) {
+            let arg_count = self.argument_list();
+            self.named_variable(Token::synthetic("super"), ctx);
+            self.emit_bytes(Opcode::SuperInvoke as u8, name);
+            self.emit_byte(arg_count);
+        } else {
+            self.named_variable(Token::synthetic("super"), ctx);
+            self.emit_bytes(Opcode::GetSuper as u8, name);
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1315,6 +1377,8 @@ pub enum TokenKind {
 
     Error,
     Eof,
+
+    Synthetic,
 }
 
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -1322,6 +1386,16 @@ pub struct Token<'src> {
     kind: TokenKind,
     line: u32,
     msg: &'src str,
+}
+
+impl<'src> Token<'src> {
+    fn synthetic(msg: &'src str) -> Self {
+        Self {
+            kind: TokenKind::Synthetic,
+            line: u32::MAX,
+            msg,
+        }
+    }
 }
 
 pub struct Scanner<'src> {

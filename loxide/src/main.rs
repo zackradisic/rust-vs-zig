@@ -87,6 +87,38 @@ mod test {
     };
 
     #[test]
+    fn superclasses() {
+        let src = r#"
+class Doughnut {
+  cook() {
+    print "Dunk in the fryer.";
+    this.finish("sprinkles");
+  }
+
+  finish(ingredient) {
+    return "Finish with " + ingredient;
+  }
+}
+
+class Cruller < Doughnut {
+  finish(ingredient) {
+    // No sprinkles, always icing.
+    return super.finish("icing");
+  }
+}
+
+var cruller = Cruller();
+var result = cruller.finish("noice");
+"#;
+
+        let mut stack: ValueStack = [MaybeUninit::uninit(); STACK_MAX];
+        let mut vm = interpret(&mut stack, src).unwrap();
+        let result_var_str = vm.get_string("result");
+        let value = vm.mem.globals.get(result_var_str);
+        assert_eq!(value.unwrap().as_str().unwrap(), "Finish with icing");
+    }
+
+    #[test]
     fn invoking_fields() {
         let src = r#"
         class Oops {

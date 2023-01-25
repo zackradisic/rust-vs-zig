@@ -661,6 +661,42 @@ impl<'b> VM<'b> {
             let byte = self.read_byte();
 
             match Opcode::from_u8(byte) {
+                Some(Opcode::SuperInvoke) => {
+                    let method = self.read_constant().as_obj_str_ptr().unwrap();
+                    let arg_count = self.read_byte();
+                    let superclass = self.pop().as_class_ptr().unwrap();
+
+                    if !self.invoke_from_class(superclass, method, arg_count) {
+                        return Err(InterpretError::RuntimeError);
+                    }
+                }
+                Some(Opcode::GetSuper) => {
+                    // The name of the class
+                    let name = self.read_constant().as_obj_str_ptr().unwrap();
+
+                    let superclass = self.pop().as_class_ptr().unwrap();
+
+                    if !self.bind_method(superclass, name) {
+                        return Err(InterpretError::RuntimeError);
+                    }
+                }
+                Some(Opcode::Inherit) => {
+                    let superclass = self.peek(1);
+                    let superclass = match superclass.as_class() {
+                        Some(class) => class,
+                        None => {
+                            self.runtime_error("Superclass must be a class.".into());
+                            return Err(InterpretError::RuntimeError);
+                        }
+                    };
+
+                    let mut subclass = self.peek(0);
+                    let subclass = subclass.as_class_mut().unwrap();
+
+                    superclass.methods.add_all(&mut subclass.methods);
+
+                    self.pop();
+                }
                 Some(Opcode::Invoke) => {
                     let method = self.read_constant().as_obj_str_ptr().unwrap();
                     let arg_count = self.read_byte();
