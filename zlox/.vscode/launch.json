@@ -1,0 +1,15 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "type": "lldb",
+      "request": "launch",
+      "name": "debug",
+      "program": "main",
+      "args": ["test.lox"],
+      // "cwd": "/Users/zackradisic/Code/lox-vms/zlox/",
+      "env": {},
+      "console": "internalConsole"
+    }
+  ]
+}
