@@ -12,6 +12,7 @@ const Opcode = _chunk.Opcode;
 var VM = @import("vm.zig").get_vm();
 const CompilerType = @import("compile.zig").Compiler;
 const Scanner = @import("scanner.zig");
+const GC = @import("gc.zig");
 
 var general_purpose_allocator = std.heap.GeneralPurposeAllocator(.{}){};
 const alloc = general_purpose_allocator.allocator();
@@ -78,15 +79,22 @@ pub fn run_file(allocator: Allocator, path: []const u8) !void {
 }
 
 pub fn interpret(allocator: Allocator, source: []const u8) !void {
+    var gc = GC.init(allocator);
     var chunk = try Chunk.init(allocator);
     defer chunk.free(allocator);
 
-    var compiler = try Compiler.init(allocator, errw, source, &chunk);
-    _ = try compiler.compile();
+    var parser = Compiler.init_parser();
+    var compiler = try Compiler.init(&gc, errw, source, &chunk, &parser);
+    const compile_success = try compiler.compile();
+    if (!compile_success) {
+        @panic("Failed to compile.");
+    }
     debug.assert(chunk.code.items.len == chunk.lines.items.len);
 
-    VM.init(&chunk);
-    defer VM.free();
+    VM.init(gc, &chunk);
+    defer { 
+        _ = VM.free() catch {};
+    }
 
     try VM.run();
 }

@@ -1,10 +1,14 @@
 const std = @import("std");
 const debug = std.debug;
+const mem = std.mem;
+const Allocator = std.mem.Allocator;
 const _chunk = @import("chunk.zig");
 const Chunk = _chunk.Chunk;
 const Opcode = _chunk.Opcode;
 const Value = @import("value.zig").Value;
 const TRACING = @import("common.zig").TRACING;
+const Obj = @import("obj.zig");
+const GC = @import("gc.zig");
 
 const Self = @This();
 pub var VM: Self = .{
@@ -13,6 +17,7 @@ pub var VM: Self = .{
     // .stack = std.mem.zeroes([STACK_MAX]Value),
     .stack = undefined,
     .stack_top = undefined,
+    .gc = undefined,
 };
 
 pub fn get_vm() *Self {
@@ -30,33 +35,40 @@ chunk: *Chunk,
 ip: [*]u8,
 stack: [STACK_MAX]Value,
 stack_top: [*]Value,
+gc: GC,
+objs: ?*Obj = null,
 
-pub fn init(self: *Self, chunk: *Chunk) void {
+pub fn init(self: *Self, gc: GC, chunk: *Chunk) void {
     self.stack_top = self.stack[0..];
     self.chunk = chunk;
     self.ip = @ptrCast([*]u8, chunk.code.items.ptr);
+    self.gc = gc;
 }
 
-pub fn free(self: *Self) void {
+pub fn free(self: *Self) !void {
     self.chunk = undefined;
+    try self.gc.free_objects();
 }
 
 pub fn run(self: *Self) !void {
     while (true) {
-        if (comptime TRACING) {
+        if (comptime TRACING) blk: {
             // Print stack trace
             const top = @ptrToInt(self.stack_top);
             const stack = @ptrToInt(self.stack[0..]);
+            if (top == stack) { break :blk; }
 
-            const idx = (top - stack) / @sizeOf(Value);
+            const idx = (top - 1 - stack) / @sizeOf(Value);
             for (self.stack[0..idx]) |value| {
                 debug.print("[ ", .{});
                 value.print(debug);
-                debug.print(" ]", .{});
+                debug.print(" ]\n", .{});
             }
 
             // Print the current instruction
-            _ = self.chunk.disassemble_instruction(@ptrToInt(self.ip) - @ptrToInt(self.chunk.code.items.ptr));
+            const offset = @ptrToInt(self.ip) - @ptrToInt(self.chunk.code.items.ptr);
+            if (offset >= self.chunk.code.items.len) { break :blk; }
+            _ = self.chunk.disassemble_instruction(offset);
         }
 
         const instruction = @intToEnum(Opcode, self.read_byte());
@@ -74,7 +86,17 @@ pub fn run(self: *Self) !void {
             },
             .Greater => self.binary_op(.Greater),
             .Less => self.binary_op(.Less),
-            .Add => self.binary_op(.Add),
+            .Add => { 
+                if (self.peek(0).as_obj()) |a| {
+                    if (self.peek(1).as_obj()) |b| {
+                        if (a.is(Obj.String) and b.is(Obj.String)) {
+                            try self.concatenate();
+                            continue;
+                        } 
+                    }
+                }
+                self.binary_op(.Add);
+            },
             .Subtract => self.binary_op(.Subtract),
             .Multiply => self.binary_op(.Multiply),
             .Divide => self.binary_op(.Divide),
@@ -96,6 +118,20 @@ pub fn run(self: *Self) !void {
             },
         }
     }
+}
+
+pub fn concatenate(self: *Self) !void {
+    const b = self.pop().Obj.narrow(Obj.String);
+    const a = self.pop().Obj.narrow(Obj.String);
+
+    const new_len = a.len + b.len;
+    const new_chars = try self.gc.allocator.alloc(u8, new_len);
+
+    mem.copy(u8, new_chars, a.chars[0..a.len]);
+    mem.copy(u8, new_chars[a.len..], b.chars[0..b.len]);
+
+    const str = try self.gc.take_string(@ptrCast([*]const u8, new_chars), new_len);
+    self.push(Value.obj(str.widen()));
 }
 
 pub fn binary_op(self: *Self, comptime op: Opcode) void {

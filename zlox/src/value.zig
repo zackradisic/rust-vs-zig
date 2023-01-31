@@ -1,12 +1,15 @@
 const std = @import("std");
+const Obj = @import("obj.zig");
+
 const io = std.io;
 
-const Type = enum { Nil, Bool, Number };
+pub const Type = enum { Nil, Bool, Number, Obj };
 
 pub const Value = union(Type) {
     Nil: void,
     Bool: bool,
     Number: f64,
+    Obj: *Obj,
 
     pub fn print(self: *const Value, writer: anytype) void {
         writer.print("{}\n", .{self});
@@ -19,6 +22,11 @@ pub const Value = union(Type) {
             .Nil => true,
             .Bool => a.Bool == b.Bool,
             .Number => a.Number == b.Number,
+            .Obj => {
+                const astr = a.Obj.narrow(Obj.String);
+                const bstr = b.Obj.narrow(Obj.String);
+                return Obj.String.eq(astr, bstr);
+            },
         };
     }
 
@@ -36,6 +44,10 @@ pub const Value = union(Type) {
 
     pub inline fn number(val: f64) Value {
         return Value{ .Number = val };
+    }
+
+    pub inline fn obj(o: *Obj) Value {
+        return Value{ .Obj = o };
     }
 
     pub fn as_boolean(self: Value) ?bool {
@@ -58,18 +70,24 @@ pub const Value = union(Type) {
             else => return null,
         }
     }
+
+    pub fn as_obj(self: Value) ?*Obj {
+        switch (self) {
+            .Obj => |val| return val,
+            else => return null,
+        }
+    }
 };
 
 pub fn main() !void {
-    var nil = Value.boolean(true);
-    const noob = nil.foo(Type.Nil);
-    std.debug.print("NOOB: {}\n", .{noob});
-
-    const ty = comptime blk: {
-        const ty_info = @typeInfo(Value);
-        break :blk ty_info.Union.fields[0].name;
+    const myStruct = struct {
+        array: ?std.ArrayListUnmanaged(u32),
     };
-    std.debug.print("VALUE TYPE: {s}\n", .{ty});
+    const myStruct2 = struct {
+        array: std.ArrayListUnmanaged(u32),
+    };
+
+    std.debug.print("SIZE: {} {}\n", .{ @sizeOf(myStruct), @sizeOf(myStruct2) });
 }
 
 // pub fn main() !void {

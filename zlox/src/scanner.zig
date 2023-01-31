@@ -1,6 +1,5 @@
 const std = @import("std");
 const debug = std.debug;
-const Allocator = std.mem.Allocator;
 
 pub const TokenType = enum {
     // Single-character tokens.
@@ -89,16 +88,14 @@ pub const Token = struct {
 
 const Scanner = @This();
 
-allocator: Allocator,
 end: [*]const u8,
 start: [*]const u8,
 current: [*]const u8,
 line: u16,
 
-pub fn init(allocator: Allocator, source: []const u8) Scanner {
+pub fn init(source: []const u8) Scanner {
     var start = @ptrCast([*]const u8, source);
     return Scanner{
-        .allocator = allocator,
         .end = @ptrCast([*]const u8, if (source.len == 0) &start[0] else &source[source.len - 1]),
         .start = start,
         .current = @ptrCast([*]const u8, source),
@@ -316,7 +313,12 @@ pub fn identifier_type(self: *Scanner) TokenType {
 
 pub fn check_keyword(self: *Scanner, start: usize, rest: []const u8, token_type: TokenType) TokenType {
     const len = rest.len;
-    if (@ptrToInt(self.current) - @ptrToInt(self.start) == start + len and std.mem.eql(u8, self.start[start..len], rest)) {
+    const tgt = self.start[start..len + 1];
+    const lhs = @ptrToInt(self.current) - @ptrToInt(self.start);
+    const rhs = start + len;
+    _ = lhs;
+    _ = rhs;
+    if (@ptrToInt(self.current) - @ptrToInt(self.start) == start + len and std.mem.eql(u8, tgt, rest)) {
         return token_type;
     }
 

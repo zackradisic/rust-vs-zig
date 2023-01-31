@@ -12,6 +12,9 @@ const Opcode = _chunk.Opcode;
 
 const Value = @import("value.zig").Value;
 const common = @import("common.zig");
+const GC = @import("gc.zig");
+
+const Obj = @import("obj.zig");
 
 const Precedence = enum {
     None,
@@ -30,6 +33,12 @@ const Precedence = enum {
 pub fn Compiler(comptime EW: type) type {
     return struct {
         const Self = @This();
+
+        gc: *GC,
+        errw: EW,
+        scanner: Scanner,
+        parser: *Parser,
+        chunk: *Chunk,
 
         const ParseRule = struct {
             prefix: ?*const fn (*Self) anyerror!void = null,
@@ -62,7 +71,7 @@ pub fn Compiler(comptime EW: type) type {
             .Less = ParseRule{ .infix = Self.binary, .precedence = Precedence.Comparison },
             .LessEqual = ParseRule{ .infix = Self.binary, .precedence = Precedence.Comparison },
             .Identifier = ParseRule{},
-            .String = ParseRule{},
+            .String = ParseRule{ .prefix = Self.string },
             .Number = ParseRule{ .prefix = Self.number },
             .And = ParseRule{},
             .Class = ParseRule{},
@@ -84,21 +93,21 @@ pub fn Compiler(comptime EW: type) type {
             .Eof = ParseRule{},
         });
 
-        allocator: Allocator,
-        errw: EW,
-        scanner: Scanner,
-        parser: *Parser,
-        chunk: *Chunk,
-
-        pub fn init(allocator: Allocator, errw: EW, source: []const u8, chunk: *Chunk) !Self {
+        pub fn init(gc: *GC, errw: EW, source: []const u8, chunk: *Chunk, parser: *Parser) !Self {
             return Self{
-                .allocator = allocator,
+                .gc = gc,
                 .errw = errw,
-                .scanner = Scanner.init(allocator, source),
-                .parser = try allocator.create(Parser),
+                .scanner = Scanner.init(source),
+                .parser = parser,
                 .chunk = chunk,
             };
         }
+
+        pub fn init_parser() Parser {
+            return Parser.init();
+        }
+
+        // pub fn free();
 
         pub fn compile(self: *Self) !bool {
             // self.scanner.scan();
@@ -114,7 +123,7 @@ pub fn Compiler(comptime EW: type) type {
         }
 
         fn emit_byte(self: *Self, byte: u8) !void {
-            try self.current_chunk().write_byte(self.allocator, byte, self.parser.previous.line);
+            try self.current_chunk().write_byte(self.gc.allocator, byte, self.parser.previous.line);
         }
 
         fn emit_bytes(self: *Self, comptime n: usize, bytes: *const [n]u8) !void {
@@ -133,7 +142,7 @@ pub fn Compiler(comptime EW: type) type {
         }
 
         fn make_constant(self: *Self, value: Value) !u8 {
-            const constant = try self.current_chunk().add_constant(self.allocator, value);
+            const constant = try self.current_chunk().add_constant(self.gc.allocator, value);
             if (constant > std.math.maxInt(u8)) {
                 self.report_error("Too many constants in one chunk.");
                 return 0;
@@ -204,7 +213,7 @@ pub fn Compiler(comptime EW: type) type {
             while (precedence_int <= @enumToInt(Self.get_rule(self.parser.current.type).precedence)) {
                 self.advance();
                 const infix_rule = Self.get_rule(self.parser.previous.type).infix orelse {
-                    @panic(std.fmt.allocPrint(self.allocator, "No infix expression found for {s}\n", .{self.parser.previous.type.name()}) catch unreachable);
+                    @panic(std.fmt.allocPrint(self.gc.allocator, "No infix expression found for {s}\n", .{self.parser.previous.type.name()}) catch unreachable);
                 };
                 try infix_rule(self);
             }
@@ -226,6 +235,11 @@ pub fn Compiler(comptime EW: type) type {
                 .Nil => try self.emit_constant(Value.nil()),
                 else => {},
             }
+        }
+
+        fn string(self: *Self) !void {
+            const obj_string = try self.gc.copy(self.parser.previous.content + 1, self.parser.previous.len - 2);
+            try self.emit_constant(Value.obj(obj_string.widen()));
         }
 
         pub fn get_rule(token_type: TokenType) ParseRule {
