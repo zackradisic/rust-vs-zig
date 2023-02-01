@@ -38,6 +38,7 @@ pub fn is(self: *Obj, comptime ParentType: type) bool {
 pub const String = struct {
     obj: Obj,
     len: u32,
+    hash: u32,
     chars: [*]const u8,
 
     pub fn as_string(self: *String) []const u8 {
@@ -52,4 +53,5 @@ pub const String = struct {
     pub inline fn widen(self: *String) *Obj {
         return @ptrCast(*Obj, self);
     }
+
 };

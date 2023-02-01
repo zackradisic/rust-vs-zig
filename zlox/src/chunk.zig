@@ -4,7 +4,6 @@ const mem = std.mem;
 const debug = std.debug;
 const Allocator = mem.Allocator;
 
-const noob = std.ArrayListAligned;
 const ArrayList = std.ArrayListUnmanaged;
 
 pub const Opcode = enum(u8) {

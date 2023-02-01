@@ -9,6 +9,7 @@ const Value = @import("value.zig").Value;
 const TRACING = @import("common.zig").TRACING;
 const Obj = @import("obj.zig");
 const GC = @import("gc.zig");
+const Table = @import("table.zig");
 
 const Self = @This();
 pub var VM: Self = .{
@@ -33,10 +34,10 @@ const STACK_MAX = 1024;
 
 chunk: *Chunk,
 ip: [*]u8,
-stack: [STACK_MAX]Value,
 stack_top: [*]Value,
 gc: GC,
 objs: ?*Obj = null,
+stack: [STACK_MAX]Value,
 
 pub fn init(self: *Self, gc: GC, chunk: *Chunk) void {
     self.stack_top = self.stack[0..];
