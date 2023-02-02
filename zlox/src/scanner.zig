@@ -76,6 +76,10 @@ pub const TokenType = enum {
 };
 
 pub const Token = struct {
+    // 1
+    // 2
+    // 2
+    // 8
     type: TokenType,
     content: [*]const u8,
     len: u16,
@@ -313,7 +317,7 @@ pub fn identifier_type(self: *Scanner) TokenType {
 
 pub fn check_keyword(self: *Scanner, start: usize, rest: []const u8, token_type: TokenType) TokenType {
     const len = rest.len;
-    const tgt = self.start[start..len + 1];
+    const tgt = self.start[start .. len + 1];
     const lhs = @ptrToInt(self.current) - @ptrToInt(self.start);
     const rhs = start + len;
     _ = lhs;

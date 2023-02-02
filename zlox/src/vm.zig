@@ -145,8 +145,6 @@ pub fn run(self: *Self) !void {
                 self.push(constant);
             },
             .Return => {
-                self.pop().print(debug);
-                debug.print("\n", .{});
                 return;
             },
         }

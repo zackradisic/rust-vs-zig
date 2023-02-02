@@ -111,8 +111,13 @@ pub fn Compiler(comptime EW: type) type {
 
         pub fn compile(self: *Self) !bool {
             self.advance();
-            try self.expression();
-            self.consume(TokenType.Eof, "Expect end of expression.");
+
+            while (!self.match_tok(.Eof)) {
+                try self.declaration();
+            }
+
+            // self.consume(TokenType.Eof, "Expect end of expression.");
+            try self.end();
 
             return !self.parser.had_error;
         }
@@ -136,7 +141,7 @@ pub fn Compiler(comptime EW: type) type {
         }
 
         fn emit_return(self: *Self) !void {
-            try self.current_chunk().write_op(self.allocator, .Return, self.parser.previous.line);
+            try self.current_chunk().write_op(self.gc.allocator, .Return, self.parser.previous.line);
         }
 
         fn emit_constant(self: *Self, value: Value) !void {
@@ -157,11 +162,11 @@ pub fn Compiler(comptime EW: type) type {
             return self.chunk;
         }
 
-        fn end(self: *Self) void {
+        fn end(self: *Self) !void {
             if (comptime common.PRINT_CODE) {
                 self.current_chunk().disassemble("code");
             }
-            self.emit_return();
+            try self.emit_return();
         }
 
         fn expression(self: *Self) !void {
@@ -180,14 +185,14 @@ pub fn Compiler(comptime EW: type) type {
         }
 
         fn declaration(self: *Self) !void {
-            try self.expression();
+            try self.statement();
             if (self.parser.panic_mode) {
-                self.synchronize();
+                try self.synchronize();
             }
         }
 
         fn statement(self: *Self) !void {
-            if (self.match(TokenType.Print)) {
+            if (self.match_tok(TokenType.Print)) {
                 try self.print_statement();
             } else {
                 try self.expression_statement();
@@ -202,7 +207,7 @@ pub fn Compiler(comptime EW: type) type {
 
         fn print_statement(self: *Self) !void {
             try self.expression();
-            try self.consume(TokenType.Semicolon, "Expect ';' after value.");
+            self.consume(TokenType.Semicolon, "Expect ';' after value.");
             try self.emit_op(.Print);
         }
 
