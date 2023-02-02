@@ -57,7 +57,9 @@ pub fn run(self: *Self) !void {
             // Print stack trace
             const top = @ptrToInt(self.stack_top);
             const stack = @ptrToInt(self.stack[0..]);
-            if (top == stack) { break :blk; }
+            if (top == stack) {
+                break :blk;
+            }
 
             const idx = (top - 1 - stack) / @sizeOf(Value);
             for (self.stack[0..idx]) |value| {
@@ -68,13 +70,43 @@ pub fn run(self: *Self) !void {
 
             // Print the current instruction
             const offset = @ptrToInt(self.ip) - @ptrToInt(self.chunk.code.items.ptr);
-            if (offset >= self.chunk.code.items.len) { break :blk; }
+            if (offset >= self.chunk.code.items.len) {
+                break :blk;
+            }
             _ = self.chunk.disassemble_instruction(offset);
         }
 
         const instruction = @intToEnum(Opcode, self.read_byte());
 
         switch (instruction) {
+            .SetGlobal => {
+                const name = self.read_string();
+                if (try self.gc.globals.insert(&self.gc, name, self.peek(0))) {
+                    _ = self.gc.globals.delete(name);
+                    self.runtime_error_fmt("redefinition of global variable '{}'", .{name});
+                    return InterpretError.RuntimeError;
+                }
+            },
+            .GetGlobal => {
+                const name = self.read_string();
+                if (self.gc.globals.get(name)) |value| {
+                    self.push(value);
+                } else {
+                    return InterpretError.RuntimeError;
+                }
+            },
+            .DefineGlobal => {
+                const name = self.read_string();
+                const value = self.peek(0);
+                _ = try self.gc.globals.insert(&self.gc, name, value);
+                _ = self.pop();
+            },
+            .Pop => {
+                _ = self.pop();
+            },
+            .Print => {
+                self.pop().print(debug);
+            },
             .Not => self.push(Value.boolean(self.pop().is_falsey())),
             .Nil => self.push(Value.nil()),
             .True => self.push(Value.boolean(true)),
@@ -87,13 +119,13 @@ pub fn run(self: *Self) !void {
             },
             .Greater => self.binary_op(.Greater),
             .Less => self.binary_op(.Less),
-            .Add => { 
+            .Add => {
                 if (self.peek(0).as_obj()) |a| {
                     if (self.peek(1).as_obj()) |b| {
                         if (a.is(Obj.String) and b.is(Obj.String)) {
                             try self.concatenate();
                             continue;
-                        } 
+                        }
                     }
                 }
                 self.binary_op(.Add);
@@ -184,8 +216,18 @@ pub inline fn read_constant(self: *Self) Value {
     return self.chunk.constants.items[byte];
 }
 
+pub inline fn read_string(self: *Self) *Obj.String {
+    const byte = self.read_byte();
+    return self.chunk.constants.items[byte].as_obj().?.narrow(Obj.String);
+}
+
 pub fn runtime_error(self: *Self, message: []const u8) void {
     debug.print("Runtime error: {s}\n", .{message});
+    self.reset_stack();
+}
+
+pub fn runtime_error_fmt(self: *Self, comptime fmt: []const u8, args: anytype) void {
+    debug.print(fmt, args);
     self.reset_stack();
 }
 

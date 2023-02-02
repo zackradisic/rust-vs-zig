@@ -11,12 +11,14 @@ const GC = @This();
 allocator: Allocator,
 obj_list: ?*Obj,
 interned_strings: Table,
+globals: Table,
 
 pub fn init(allocator: Allocator) GC {
     return .{
         .allocator = allocator,
         .obj_list = null,
         .interned_strings = Table.init(),
+        .globals = Table.init(),
     };
 }
 
@@ -29,6 +31,7 @@ pub fn free_objects(self: *GC) !void {
     self.obj_list = null;
 
     self.interned_strings.free(self);
+    self.globals.free(self);
 }
 
 pub fn free_object(self: *GC, obj: *Obj) !void {
@@ -56,8 +59,8 @@ fn validate_obj_pun_type(comptime ParentType: type) void {
             found_widen = true;
         }
     }
-    if (!found_widen) { 
-        @compileError("expected punnable obj type to have a 'widen' method"); 
+    if (!found_widen) {
+        @compileError("expected punnable obj type to have a 'widen' method");
     }
 }
 
@@ -73,8 +76,14 @@ pub fn alloc_obj(self: *GC, comptime ParentType: type) !*ParentType {
     return ptr;
 }
 
+/// Free an array allocated with `alloc`. To free a single item,
+/// see `destroy`.
 pub fn free(self: *GC, memory: anytype) void {
     self.allocator.free(memory);
+}
+
+pub fn destroy(self: *GC, ptr: anytype) void {
+    self.allocator.destroy(ptr);
 }
 
 pub fn alloc_string(self: *GC, chars: [*]const u8, len: u32, hash: u32) !*Obj.String {
@@ -92,7 +101,7 @@ pub fn alloc_string(self: *GC, chars: [*]const u8, len: u32, hash: u32) !*Obj.St
 pub fn take_string(self: *GC, chars: [*]const u8, len: u32) !*Obj.String {
     const hash = Table.hash_string(chars, len);
     if (self.interned_strings.find_string(chars, len, hash)) |interned| {
-        self.free(chars);
+        self.free(chars[0..len]);
         return interned;
     }
     return self.alloc_string(chars, len, hash);
@@ -103,7 +112,7 @@ pub fn copy(self: *GC, chars: [*]const u8, len: u32) !*Obj.String {
     if (self.interned_strings.find_string(chars, len, hash)) |interned| {
         return interned;
     }
-    const alloced_chars = try self.allocator.alloc(u8, len); 
+    const alloced_chars = try self.allocator.alloc(u8, len);
     mem.copy(u8, alloced_chars, chars[0..len]);
     return self.alloc_string(@ptrCast([*]const u8, alloced_chars), len, hash);
 }

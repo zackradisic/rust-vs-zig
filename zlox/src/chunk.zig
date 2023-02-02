@@ -6,22 +6,7 @@ const Allocator = mem.Allocator;
 
 const ArrayList = std.ArrayListUnmanaged;
 
-pub const Opcode = enum(u8) {
-    Return,
-    Constant,
-    Negate,
-    Add,
-    Subtract,
-    Multiply,
-    Divide,
-    Nil,
-    True,
-    False,
-    Not,
-    Equal,
-    Greater,
-    Less
-};
+pub const Opcode = enum(u8) { Return, Constant, Negate, Add, Subtract, Multiply, Divide, Nil, True, False, Not, Equal, Greater, Less, Print, Pop, DefineGlobal, GetGlobal, SetGlobal };
 
 pub const Chunk = struct {
     const Self = @This();
@@ -120,6 +105,21 @@ pub const Chunk = struct {
             },
             .Constant => {
                 return self.constant_instruction("OP_CONSTANT", offset);
+            },
+            .Print => {
+                return simple_instruction("OP_PRINT", offset);
+            },
+            .Pop => {
+                return simple_instruction("OP_POP", offset);
+            },
+            .DefineGlobal => {
+                return self.constant_instruction("OP_DEFINE_GLOBAL", offset);
+            },
+            .GetGlobal => {
+                return self.constant_instruction("OP_GET_GLOBAL", offset);
+            },
+            .SetGlobal => {
+                return self.constant_instruction("OP_SET_GLOBAL", offset);
             },
         }
 

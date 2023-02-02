@@ -41,8 +41,8 @@ pub fn Compiler(comptime EW: type) type {
         chunk: *Chunk,
 
         const ParseRule = struct {
-            prefix: ?*const fn (*Self) anyerror!void = null,
-            infix: ?*const fn (*Self) anyerror!void = null,
+            prefix: ?*const fn (*Self, bool) anyerror!void = null,
+            infix: ?*const fn (*Self, bool) anyerror!void = null,
             precedence: Precedence = .None,
         };
         const ParseRuleTable = std.EnumArray(TokenType, ParseRule);
@@ -63,14 +63,14 @@ pub fn Compiler(comptime EW: type) type {
             .Slash = ParseRule{ .infix = Self.binary, .precedence = Precedence.Factor },
             .Star = ParseRule{ .infix = Self.binary, .precedence = Precedence.Factor },
             .Bang = ParseRule{ .prefix = Self.unary },
-            .BangEqual = ParseRule{ .infix = Self.binary, .precedence = Precedence.Equalitu},
+            .BangEqual = ParseRule{ .infix = Self.binary, .precedence = Precedence.Equalitu },
             .Equal = ParseRule{},
-            .EqualEqual = ParseRule{ .infix = Self.binary, .precedence = Precedence.Equalitu},
-            .Greater = ParseRule{ .infix = Self.binary, .precedence = Precedence.Comparison},
+            .EqualEqual = ParseRule{ .infix = Self.binary, .precedence = Precedence.Equalitu },
+            .Greater = ParseRule{ .infix = Self.binary, .precedence = Precedence.Comparison },
             .GreaterEqual = ParseRule{ .infix = Self.binary, .precedence = Precedence.Comparison },
             .Less = ParseRule{ .infix = Self.binary, .precedence = Precedence.Comparison },
             .LessEqual = ParseRule{ .infix = Self.binary, .precedence = Precedence.Comparison },
-            .Identifier = ParseRule{},
+            .Identifier = ParseRule{ .prefix = Self.variable },
             .String = ParseRule{ .prefix = Self.string },
             .Number = ParseRule{ .prefix = Self.number },
             .And = ParseRule{},
@@ -110,7 +110,6 @@ pub fn Compiler(comptime EW: type) type {
         // pub fn free();
 
         pub fn compile(self: *Self) !bool {
-            // self.scanner.scan();
             self.advance();
             try self.expression();
             self.consume(TokenType.Eof, "Expect end of expression.");
@@ -127,8 +126,12 @@ pub fn Compiler(comptime EW: type) type {
         }
 
         fn emit_bytes(self: *Self, comptime n: usize, bytes: *const [n]u8) !void {
-            inline for (bytes) |byte| {
-                try self.emit_byte(byte);
+            if (comptime n != bytes.len) {
+                @compileError("emit_bytes: n != bytes.len");
+            }
+            comptime var i = 0;
+            inline while (i < n) : (i += 1) {
+                try self.emit_byte(bytes[i]);
             }
         }
 
@@ -150,27 +153,67 @@ pub fn Compiler(comptime EW: type) type {
             return constant;
         }
 
-        pub inline fn current_chunk(self: *Self) *Chunk {
+        inline fn current_chunk(self: *Self) *Chunk {
             return self.chunk;
         }
 
-        pub fn end(self: *Self) void {
+        fn end(self: *Self) void {
             if (comptime common.PRINT_CODE) {
                 self.current_chunk().disassemble("code");
             }
             self.emit_return();
         }
 
-        pub fn expression(self: *Self) !void {
+        fn expression(self: *Self) !void {
             try self.parse_precedence(.Assignment);
         }
 
-        pub fn grouping(self: *Self) !void {
+        fn var_declaration(self: *Self) !void {
+            const global = try self.parse_variable("Expect variable name.");
+            if (self.match_token(TokenType.Equal)) {
+                try self.expression();
+            } else {
+                try self.emit_op(.Nil);
+            }
+            try self.consume(TokenType.Semicolon, "Expect ';' after variable declaration.");
+            try self.define_variable(global);
+        }
+
+        fn declaration(self: *Self) !void {
+            try self.expression();
+            if (self.parser.panic_mode) {
+                self.synchronize();
+            }
+        }
+
+        fn statement(self: *Self) !void {
+            if (self.match(TokenType.Print)) {
+                try self.print_statement();
+            } else {
+                try self.expression_statement();
+            }
+        }
+
+        fn expression_statement(self: *Self) !void {
+            try self.expression();
+            self.consume(TokenType.Semicolon, "Expect ';' after expression.");
+            try self.emit_op(.Pop);
+        }
+
+        fn print_statement(self: *Self) !void {
+            try self.expression();
+            try self.consume(TokenType.Semicolon, "Expect ';' after value.");
+            try self.emit_op(.Print);
+        }
+
+        fn grouping(self: *Self, can_assign: bool) !void {
+            _ = can_assign;
             try self.expression();
             self.consume(TokenType.RightParen, "Expect ')' after expression.");
         }
 
-        pub fn unary(self: *Self) !void {
+        fn unary(self: *Self, can_assign: bool) !void {
+            _ = can_assign;
             const token_type = self.parser.previous.type;
             try self.parse_precedence(.Unary);
             switch (token_type) {
@@ -180,7 +223,8 @@ pub fn Compiler(comptime EW: type) type {
             }
         }
 
-        pub fn binary(self: *Self) !void {
+        fn binary(self: *Self, can_assign: bool) !void {
+            _ = can_assign;
             const operator_type = self.parser.previous.type;
             const rule = Self.get_rule(operator_type);
             try self.parse_precedence(@intToEnum(Precedence, @enumToInt(rule.precedence) + 1));
@@ -201,13 +245,14 @@ pub fn Compiler(comptime EW: type) type {
             }
         }
 
-        pub fn parse_precedence(self: *Self, precedence: Precedence) !void {
+        fn parse_precedence(self: *Self, precedence: Precedence) !void {
             self.advance();
             const prefix_rule = Self.get_rule(self.parser.previous.type).prefix orelse {
                 self.report_error("Expect expression.");
                 return;
             };
-            try prefix_rule(self);
+            const can_assign = @enumToInt(precedence) <= @enumToInt(Precedence.Assignment);
+            try prefix_rule(self, can_assign);
 
             const precedence_int = @enumToInt(precedence);
             while (precedence_int <= @enumToInt(Self.get_rule(self.parser.current.type).precedence)) {
@@ -215,11 +260,29 @@ pub fn Compiler(comptime EW: type) type {
                 const infix_rule = Self.get_rule(self.parser.previous.type).infix orelse {
                     @panic(std.fmt.allocPrint(self.gc.allocator, "No infix expression found for {s}\n", .{self.parser.previous.type.name()}) catch unreachable);
                 };
-                try infix_rule(self);
+                try infix_rule(self, can_assign);
+            }
+
+            if (can_assign and self.match_tok(TokenType.Equal)) {
+                self.report_error("Invalid assignment target.");
             }
         }
 
-        fn number(self: *Self) !void {
+        fn parse_variable(self: *Self, error_message: []const u8) !u8 {
+            self.consume(TokenType.Identifier, error_message);
+            return self.identifier_constant(&self.parser.previous);
+        }
+
+        fn define_variable(self: *Self, global: u8) !void {
+            return self.emit_bytes(2, &[_]u8{ @enumToInt(Opcode.DefineGlobal), global });
+        }
+
+        fn identifier_constant(self: *Self, name: *Token) !u8 {
+            return try self.make_constant(Value.obj((try self.gc.copy(name.content, name.len)).widen()));
+        }
+
+        fn number(self: *Self, can_assign: bool) !void {
+            _ = can_assign;
             const value = std.fmt.parseFloat(f64, self.parser.previous.content[0..self.parser.previous.len]) catch {
                 self.error_at(self.parser.previous, "Invalid number");
                 return;
@@ -228,7 +291,8 @@ pub fn Compiler(comptime EW: type) type {
             try self.emit_constant(Value.number(value));
         }
 
-        fn literal(self: *Self) !void {
+        fn literal(self: *Self, can_assign: bool) !void {
+            _ = can_assign;
             switch (self.parser.previous.type) {
                 .True => try self.emit_constant(Value.boolean(true)),
                 .False => try self.emit_constant(Value.boolean(false)),
@@ -237,16 +301,32 @@ pub fn Compiler(comptime EW: type) type {
             }
         }
 
-        fn string(self: *Self) !void {
+        fn string(self: *Self, can_assign: bool) !void {
+            _ = can_assign;
             const obj_string = try self.gc.copy(self.parser.previous.content + 1, self.parser.previous.len - 2);
             try self.emit_constant(Value.obj(obj_string.widen()));
         }
 
-        pub fn get_rule(token_type: TokenType) ParseRule {
+        fn variable(self: *Self, can_assign: bool) !void {
+            try self.named_variable(&self.parser.previous, can_assign);
+        }
+
+        fn named_variable(self: *Self, name: *Token, can_assign: bool) !void {
+            const arg = try self.identifier_constant(name);
+
+            if (can_assign and self.match_tok(.Equal)) {
+                try self.expression();
+                try self.emit_bytes(2, &[_]u8{ @enumToInt(Opcode.SetGlobal), arg });
+            } else {
+                try self.emit_bytes(2, &[_]u8{ @enumToInt(Opcode.GetGlobal), arg });
+            }
+        }
+
+        fn get_rule(token_type: TokenType) ParseRule {
             return rules.get(token_type);
         }
 
-        pub fn consume(self: *Self, comptime token_type: TokenType, message: []const u8) void {
+        fn consume(self: *Self, comptime token_type: TokenType, message: []const u8) void {
             if (self.parser.current.type == token_type) {
                 self.advance();
             } else {
@@ -254,7 +334,7 @@ pub fn Compiler(comptime EW: type) type {
             }
         }
 
-        pub fn advance(self: *Self) void {
+        fn advance(self: *Self) void {
             self.parser.previous = self.parser.current;
 
             while (true) {
@@ -268,15 +348,27 @@ pub fn Compiler(comptime EW: type) type {
             }
         }
 
-        pub fn error_at_current(self: *Self, message: []const u8) void {
+        fn match_tok(self: *Self, ty: TokenType) bool {
+            if (!self.check(ty)) {
+                return false;
+            }
+            self.advance();
+            return true;
+        }
+
+        fn check(self: *Self, ty: TokenType) bool {
+            return self.parser.current.type == ty;
+        }
+
+        fn error_at_current(self: *Self, message: []const u8) void {
             self.error_at(self.parser.current, message);
         }
 
-        pub fn report_error(self: *Self, message: []const u8) void {
+        fn report_error(self: *Self, message: []const u8) void {
             self.error_at(self.parser.previous, message);
         }
 
-        pub fn error_at(self: *Self, token: Token, message: []const u8) void {
+        fn error_at(self: *Self, token: Token, message: []const u8) void {
             if (self.parser.panic_mode) return;
 
             self.parser.panic_mode = true;
@@ -300,6 +392,21 @@ pub fn Compiler(comptime EW: type) type {
                 debug.print("Error writing to errw: {}\n", .{err});
             };
             self.parser.had_error = true;
+        }
+
+        fn synchronize(self: *Self) !void {
+            self.parser.panic_mode = false;
+
+            while (self.parser.current.type != .Eof) {
+                if (self.parser.previous.type == .Semicolon) return;
+
+                switch (self.parser.current.type) {
+                    .Class, .Fun, .Var, .For, .If, .While, .Print, .Return => return,
+                    else => {},
+                }
+
+                self.advance();
+            }
         }
     };
 }

@@ -19,7 +19,9 @@ pub fn init() Table {
 }
 
 pub fn free(self: *Table, gc: *GC) void {
-    gc.free(self.entries);
+    if (self.entries) |entries| {
+        gc.free(entries[0..self.cap]);
+    }
     self.count = 0;
     self.cap = 0;
     self.entries = null;
@@ -34,15 +36,16 @@ pub fn hash_string(key: [*]const u8, len: u32) u32 {
     return hash;
 }
 
-pub fn get(self: *const Table, key: *Obj.String) ?Value {
+pub fn get(self: *Table, key: *Obj.String) ?Value {
     if (self.count == 0) return null;
 
-    const entry = self.find_entry(key);
+    const entry = self.find_entry(key) orelse return null;
     if (entry.key == null) return null;
 
     return entry.val;
 }
 
+/// Returns true if the key is new.
 pub fn insert(self: *Table, gc: *GC, key: *Obj.String, val: Value) !bool {
     if (@intToFloat(f64, self.count + 1) > @intToFloat(f64, self.cap) * MAX_LOAD) {
         const new_cap = if (self.cap < 8) 8 else self.cap * 2;
@@ -69,7 +72,7 @@ pub fn add_all(self: *const Table, gc: *GC, to: *Table) !void {
     }
 }
 
-pub fn delete(self: *const Table, key: *Obj.String) bool {
+pub fn delete(self: *Table, key: *Obj.String) bool {
     if (self.count == 0) return false;
     var entry = self.find_entry(key) orelse return false;
     if (entry.key == null) return false;
@@ -112,10 +115,10 @@ fn find_entry_impl(entries: []Entry, key: *Obj.String) *Entry {
             if (entry.val.as_nil() != null) {
                 if (tombstone) |ts| {
                     return ts;
-                } 
+                }
                 return entry;
             }
-            
+
             if (tombstone == null) {
                 tombstone = entry;
             }
@@ -144,7 +147,7 @@ pub fn adjust_capacity(self: *Table, gc: *GC, new_cap: usize) !void {
             dest.val = entry.val;
             count += 1;
         }
-        gc.free(self.entries);
+        gc.free(entries);
     }
 
     self.entries = @ptrCast([*]Entry, new_entries);
@@ -155,7 +158,7 @@ pub fn adjust_capacity(self: *Table, gc: *GC, new_cap: usize) !void {
 pub fn entries_slice(self: *Table) ?[]Entry {
     if (self.entries) |entries| {
         return entries[0..self.cap];
-    } 
-        
+    }
+
     return null;
 }
