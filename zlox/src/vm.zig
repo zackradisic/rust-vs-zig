@@ -79,6 +79,14 @@ pub fn run(self: *Self) !void {
         const instruction = @intToEnum(Opcode, self.read_byte());
 
         switch (instruction) {
+            .SetLocal => {
+                const slot = self.read_byte();
+                self.stack[slot] = self.peek(0);
+            },
+            .GetLocal => {
+                const slot = self.read_byte();
+                self.push(self.stack[slot]);
+            },
             .SetGlobal => {
                 const name = self.read_string();
                 if (try self.gc.globals.insert(&self.gc, name, self.peek(0))) {

@@ -25,8 +25,8 @@ pub fn init(allocator: Allocator) GC {
 pub fn free_objects(self: *GC) !void {
     var obj = self.obj_list;
     while (obj) |next| {
-        self.free_object(next) catch {};
         obj = next.next;
+        self.free_object(next) catch {};
     }
     self.obj_list = null;
 

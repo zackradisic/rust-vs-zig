@@ -9,7 +9,9 @@ const _chunk = @import("chunk.zig");
 const Chunk = _chunk.Chunk;
 const Opcode = _chunk.Opcode;
 
-var VM = @import("vm.zig").get_vm();
+const VMType = @import("vm.zig");
+const InterpretError = VMType.InterpretError;
+var VM = VMType.get_vm();
 const CompilerType = @import("compile.zig").Compiler;
 const Scanner = @import("scanner.zig");
 const GC = @import("gc.zig");
@@ -21,6 +23,7 @@ const Compiler = CompilerType(std.fs.File.Writer);
 const errw = io.getStdErr().writer();
 
 pub fn main() !void {
+    debug.print("Token size: {d}\n", .{@sizeOf(Scanner.Token)});
     // First we specify what parameters our program can take.
     // We can use `parseParamsComptime` to parse a string into an array of `Param(Help)`
     const params = comptime clap.parseParamsComptime(
@@ -68,33 +71,67 @@ pub fn repl(
         // Read from stdin into the `line` buffer
         const slice = try io.getStdIn().reader().readUntilDelimiterOrEof(&line, '\n') orelse return;
 
-        try interpret(allocator, slice);
+        _ = try interpret(allocator, slice);
     }
 }
 
 pub fn run_file(allocator: Allocator, path: []const u8) !void {
     const source = try std.fs.cwd().readFileAlloc(allocator, path, std.math.maxInt(usize));
-    try interpret(allocator, source);
+    _ = try interpret(allocator, source);
     allocator.free(source);
 }
 
-pub fn interpret(allocator: Allocator, source: []const u8) !void {
+pub fn interpret(allocator: Allocator, source: []const u8) !*VMType {
     var gc = GC.init(allocator);
     var chunk = try Chunk.init(allocator);
     defer chunk.free(allocator);
 
     var parser = Compiler.init_parser();
-    var compiler = try Compiler.init(&gc, errw, source, &chunk, &parser);
+    var scanner = Scanner.init(source);
+    var compiler = try Compiler.init(&gc, errw, source, &chunk, &scanner, &parser);
     const compile_success = try compiler.compile();
     if (!compile_success) {
-        @panic("Failed to compile.");
+        return InterpretError.CompileError;
     }
     debug.assert(chunk.code.items.len == chunk.lines.items.len);
 
     VM.init(gc, &chunk);
-    defer { 
+    defer {
         _ = VM.free() catch {};
     }
 
     try VM.run();
+    return VM;
+}
+
+test "using variable in its own initializer fails" {
+    const source =
+        \\var a = "outer";
+        \\{
+        \\    var a = a;
+        \\}
+    ;
+    const vm = interpret(alloc, source) catch |err| {
+        try std.testing.expect(InterpretError.CompileError == err);
+        return;
+    };
+    _ = vm;
+}
+
+test "nested scope variables" {
+    const source =
+        \\{
+        \\  var a = "outer";
+        \\  {
+        \\      var a = "inner";
+        \\  }
+        \\}
+    ;
+    // var scan = Scanner.init(source);
+    // scan.scan();
+    const vm = interpret(alloc, source) catch |err| {
+        try std.testing.expect(InterpretError.CompileError == err);
+        return;
+    };
+    _ = vm;
 }

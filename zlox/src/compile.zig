@@ -30,19 +30,27 @@ const Precedence = enum {
     Primary,
 };
 
+pub const Local = struct {
+    name: Token,
+    depth: i32,
+};
+
 pub fn Compiler(comptime EW: type) type {
     return struct {
         const Self = @This();
 
         gc: *GC,
         errw: EW,
-        scanner: Scanner,
+        scanner: *Scanner,
         parser: *Parser,
         chunk: *Chunk,
+        locals: [std.math.maxInt(u8)]Local,
+        local_count: u32,
+        scope_depth: u32,
 
         const ParseRule = struct {
-            prefix: ?*const fn (*Self, bool) anyerror!void = null,
-            infix: ?*const fn (*Self, bool) anyerror!void = null,
+            prefix: ?*const fn (*Self, bool) Allocator.Error!void = null,
+            infix: ?*const fn (*Self, bool) Allocator.Error!void = null,
             precedence: Precedence = .None,
         };
         const ParseRuleTable = std.EnumArray(TokenType, ParseRule);
@@ -93,13 +101,17 @@ pub fn Compiler(comptime EW: type) type {
             .Eof = ParseRule{},
         });
 
-        pub fn init(gc: *GC, errw: EW, source: []const u8, chunk: *Chunk, parser: *Parser) !Self {
+        pub fn init(gc: *GC, errw: EW, source: []const u8, chunk: *Chunk, scanner: *Scanner, parser: *Parser) Allocator.Error!Self {
+            _ = source;
             return Self{
                 .gc = gc,
                 .errw = errw,
-                .scanner = Scanner.init(source),
+                .scanner = scanner,
                 .parser = parser,
                 .chunk = chunk,
+                .locals = undefined,
+                .local_count = 0,
+                .scope_depth = 0,
             };
         }
 
@@ -109,7 +121,7 @@ pub fn Compiler(comptime EW: type) type {
 
         // pub fn free();
 
-        pub fn compile(self: *Self) !bool {
+        pub fn compile(self: *Self) Allocator.Error!bool {
             self.advance();
 
             while (!self.match_tok(.Eof)) {
@@ -122,15 +134,15 @@ pub fn Compiler(comptime EW: type) type {
             return !self.parser.had_error;
         }
 
-        fn emit_op(self: *Self, op: Opcode) !void {
+        fn emit_op(self: *Self, op: Opcode) Allocator.Error!void {
             try self.emit_byte(@enumToInt(op));
         }
 
-        fn emit_byte(self: *Self, byte: u8) !void {
+        fn emit_byte(self: *Self, byte: u8) Allocator.Error!void {
             try self.current_chunk().write_byte(self.gc.allocator, byte, self.parser.previous.line);
         }
 
-        fn emit_bytes(self: *Self, comptime n: usize, bytes: *const [n]u8) !void {
+        fn emit_bytes(self: *Self, comptime n: usize, bytes: *const [n]u8) Allocator.Error!void {
             if (comptime n != bytes.len) {
                 @compileError("emit_bytes: n != bytes.len");
             }
@@ -140,16 +152,16 @@ pub fn Compiler(comptime EW: type) type {
             }
         }
 
-        fn emit_return(self: *Self) !void {
+        fn emit_return(self: *Self) Allocator.Error!void {
             try self.current_chunk().write_op(self.gc.allocator, .Return, self.parser.previous.line);
         }
 
-        fn emit_constant(self: *Self, value: Value) !void {
+        fn emit_constant(self: *Self, value: Value) Allocator.Error!void {
             const bytes = &[_]u8{ @enumToInt(Opcode.Constant), try self.make_constant(value) };
             try self.emit_bytes(bytes.len, bytes);
         }
 
-        fn make_constant(self: *Self, value: Value) !u8 {
+        fn make_constant(self: *Self, value: Value) Allocator.Error!u8 {
             const constant = try self.current_chunk().add_constant(self.gc.allocator, value);
             if (constant > std.math.maxInt(u8)) {
                 self.report_error("Too many constants in one chunk.");
@@ -162,62 +174,91 @@ pub fn Compiler(comptime EW: type) type {
             return self.chunk;
         }
 
-        fn end(self: *Self) !void {
+        fn end(self: *Self) Allocator.Error!void {
             if (comptime common.PRINT_CODE) {
                 self.current_chunk().disassemble("code");
             }
             try self.emit_return();
         }
 
-        fn expression(self: *Self) !void {
+        fn begin_scope(self: *Self) void {
+            self.scope_depth += 1;
+        }
+
+        fn end_scope(self: *Self) Allocator.Error!void {
+            self.scope_depth -= 1;
+
+            while (self.local_count > 0 and self.locals[self.local_count - 1].depth > self.scope_depth) {
+                try self.emit_op(.Pop);
+                self.local_count -= 1;
+            }
+        }
+
+        fn expression(self: *Self) Allocator.Error!void {
             try self.parse_precedence(.Assignment);
         }
 
-        fn var_declaration(self: *Self) !void {
+        fn block(self: *Self) Allocator.Error!void {
+            while (!self.check(.RightBrace) and !self.check(.Eof)) {
+                _ = try self.declaration();
+            }
+
+            self.consume(.RightBrace, "Expect '}' after block.");
+        }
+
+        fn var_declaration(self: *Self) Allocator.Error!void {
             const global = try self.parse_variable("Expect variable name.");
-            if (self.match_token(TokenType.Equal)) {
+            if (self.match_tok(TokenType.Equal)) {
                 try self.expression();
             } else {
                 try self.emit_op(.Nil);
             }
-            try self.consume(TokenType.Semicolon, "Expect ';' after variable declaration.");
+            self.consume(TokenType.Semicolon, "Expect ';' after variable declaration.");
             try self.define_variable(global);
         }
 
-        fn declaration(self: *Self) !void {
-            try self.statement();
+        fn declaration(self: *Self) Allocator.Error!void {
+            if (self.match_tok(TokenType.Var)) {
+                try self.var_declaration();
+            } else {
+                try self.statement();
+            }
             if (self.parser.panic_mode) {
-                try self.synchronize();
+                self.synchronize();
             }
         }
 
-        fn statement(self: *Self) !void {
+        fn statement(self: *Self) Allocator.Error!void {
             if (self.match_tok(TokenType.Print)) {
                 try self.print_statement();
+            } else if (self.match_tok(TokenType.LeftBrace)) {
+                self.begin_scope();
+                try self.block();
+                try self.end_scope();
             } else {
                 try self.expression_statement();
             }
         }
 
-        fn expression_statement(self: *Self) !void {
+        fn expression_statement(self: *Self) Allocator.Error!void {
             try self.expression();
             self.consume(TokenType.Semicolon, "Expect ';' after expression.");
             try self.emit_op(.Pop);
         }
 
-        fn print_statement(self: *Self) !void {
+        fn print_statement(self: *Self) Allocator.Error!void {
             try self.expression();
             self.consume(TokenType.Semicolon, "Expect ';' after value.");
             try self.emit_op(.Print);
         }
 
-        fn grouping(self: *Self, can_assign: bool) !void {
+        fn grouping(self: *Self, can_assign: bool) Allocator.Error!void {
             _ = can_assign;
             try self.expression();
             self.consume(TokenType.RightParen, "Expect ')' after expression.");
         }
 
-        fn unary(self: *Self, can_assign: bool) !void {
+        fn unary(self: *Self, can_assign: bool) Allocator.Error!void {
             _ = can_assign;
             const token_type = self.parser.previous.type;
             try self.parse_precedence(.Unary);
@@ -228,7 +269,7 @@ pub fn Compiler(comptime EW: type) type {
             }
         }
 
-        fn binary(self: *Self, can_assign: bool) !void {
+        fn binary(self: *Self, can_assign: bool) Allocator.Error!void {
             _ = can_assign;
             const operator_type = self.parser.previous.type;
             const rule = Self.get_rule(operator_type);
@@ -250,7 +291,7 @@ pub fn Compiler(comptime EW: type) type {
             }
         }
 
-        fn parse_precedence(self: *Self, precedence: Precedence) !void {
+        fn parse_precedence(self: *Self, precedence: Precedence) Allocator.Error!void {
             self.advance();
             const prefix_rule = Self.get_rule(self.parser.previous.type).prefix orelse {
                 self.report_error("Expect expression.");
@@ -273,20 +314,82 @@ pub fn Compiler(comptime EW: type) type {
             }
         }
 
-        fn parse_variable(self: *Self, error_message: []const u8) !u8 {
+        fn parse_variable(self: *Self, error_message: []const u8) Allocator.Error!u8 {
             self.consume(TokenType.Identifier, error_message);
+
+            self.declare_variable();
+            if (self.scope_depth > 0) return 0;
+
             return self.identifier_constant(&self.parser.previous);
         }
 
-        fn define_variable(self: *Self, global: u8) !void {
+        fn mark_initialized(self: *Self) void {
+            self.locals[self.local_count - 1].depth = @intCast(i32, self.scope_depth);
+        }
+
+        fn define_variable(self: *Self, global: u8) Allocator.Error!void {
+            if (self.scope_depth > 0) {
+                self.mark_initialized();
+                return;
+            }
             return self.emit_bytes(2, &[_]u8{ @enumToInt(Opcode.DefineGlobal), global });
         }
 
-        fn identifier_constant(self: *Self, name: *Token) !u8 {
+        fn declare_variable(self: *Self) void {
+            if (self.scope_depth == 0) return;
+
+            const name = self.parser.previous;
+            const locals = self.locals[0..self.local_count];
+            var i = @intCast(i64, self.local_count) - 1;
+            while (i >= 0) : (i -= 1) {
+                const local = locals[@intCast(usize, i)];
+                if (local.depth != -1 and local.depth < self.scope_depth) {
+                    break;
+                }
+
+                if (identifiers_equal(&name, &local.name)) {
+                    self.report_error("Already a variable with this name in this scope.");
+                }
+            }
+
+            self.add_local(name);
+        }
+
+        fn add_local(self: *Self, name: Token) void {
+            if (self.local_count == std.math.maxInt(u8)) {
+                self.report_error("Too many local variables in function.");
+                return;
+            }
+            var local = &self.locals[self.local_count];
+            self.local_count += 1;
+            local.name = name;
+            local.depth = -1;
+        }
+
+        fn resolve_local(self: *Self, name: *Token) i32 {
+            const locals = self.locals[0..self.local_count];
+            var i = @intCast(i64, self.local_count) - 1;
+            while (i >= 0) : (i -= 1) {
+                const local = locals[@intCast(usize, i)];
+                if (identifiers_equal(name, &local.name)) {
+                    if (local.depth == -1) {
+                        self.report_error("Can't read local variable in its own initializer.");
+                    }
+                    return @intCast(i32, i);
+                }
+            }
+            return -1;
+        }
+
+        fn identifier_constant(self: *Self, name: *Token) Allocator.Error!u8 {
             return try self.make_constant(Value.obj((try self.gc.copy(name.content, name.len)).widen()));
         }
 
-        fn number(self: *Self, can_assign: bool) !void {
+        fn identifiers_equal(a: *const Token, b: *const Token) bool {
+            return std.mem.eql(u8, a.content[0..a.len], b.content[0..b.len]);
+        }
+
+        fn number(self: *Self, can_assign: bool) Allocator.Error!void {
             _ = can_assign;
             const value = std.fmt.parseFloat(f64, self.parser.previous.content[0..self.parser.previous.len]) catch {
                 self.error_at(self.parser.previous, "Invalid number");
@@ -296,7 +399,7 @@ pub fn Compiler(comptime EW: type) type {
             try self.emit_constant(Value.number(value));
         }
 
-        fn literal(self: *Self, can_assign: bool) !void {
+        fn literal(self: *Self, can_assign: bool) Allocator.Error!void {
             _ = can_assign;
             switch (self.parser.previous.type) {
                 .True => try self.emit_constant(Value.boolean(true)),
@@ -306,24 +409,35 @@ pub fn Compiler(comptime EW: type) type {
             }
         }
 
-        fn string(self: *Self, can_assign: bool) !void {
+        fn string(self: *Self, can_assign: bool) Allocator.Error!void {
             _ = can_assign;
             const obj_string = try self.gc.copy(self.parser.previous.content + 1, self.parser.previous.len - 2);
             try self.emit_constant(Value.obj(obj_string.widen()));
         }
 
-        fn variable(self: *Self, can_assign: bool) !void {
+        fn variable(self: *Self, can_assign: bool) Allocator.Error!void {
             try self.named_variable(&self.parser.previous, can_assign);
         }
 
-        fn named_variable(self: *Self, name: *Token, can_assign: bool) !void {
-            const arg = try self.identifier_constant(name);
+        fn named_variable(self: *Self, name: *Token, can_assign: bool) Allocator.Error!void {
+            var get_op: Opcode = undefined;
+            var set_op: Opcode = undefined;
+            var arg = self.resolve_local(name);
+
+            if (arg != -1) {
+                get_op = .GetLocal;
+                set_op = .SetLocal;
+            } else {
+                arg = try self.identifier_constant(name);
+                get_op = .GetGlobal;
+                set_op = .SetGlobal;
+            }
 
             if (can_assign and self.match_tok(.Equal)) {
                 try self.expression();
-                try self.emit_bytes(2, &[_]u8{ @enumToInt(Opcode.SetGlobal), arg });
+                try self.emit_bytes(2, &[_]u8{ @enumToInt(set_op), @intCast(u8, arg) });
             } else {
-                try self.emit_bytes(2, &[_]u8{ @enumToInt(Opcode.GetGlobal), arg });
+                try self.emit_bytes(2, &[_]u8{ @enumToInt(get_op), @intCast(u8, arg) });
             }
         }
 
@@ -399,7 +513,7 @@ pub fn Compiler(comptime EW: type) type {
             self.parser.had_error = true;
         }
 
-        fn synchronize(self: *Self) !void {
+        fn synchronize(self: *Self) void {
             self.parser.panic_mode = false;
 
             while (self.parser.current.type != .Eof) {

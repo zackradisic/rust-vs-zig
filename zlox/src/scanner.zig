@@ -75,15 +75,12 @@ pub const TokenType = enum {
     }
 };
 
+pub const TokenLen = u47;
 pub const Token = struct {
-    // 1
-    // 2
-    // 2
-    // 8
     type: TokenType,
-    content: [*]const u8,
-    len: u16,
     line: u16,
+    len: u32,
+    content: [*]const u8,
 
     pub fn debug(self: Token, writer: anytype) void {
         writer.print("Token{{type: {s}, content: \"{s}\"}}", .{ @tagName(self.type), self.content[0..self.len] });
@@ -203,12 +200,21 @@ pub fn match(self: *Scanner, comptime expected: u8) bool {
 }
 
 pub fn make_token(self: *Scanner, token_type: TokenType) Token {
-    return Token{
-        .type = token_type,
-        .content = self.start,
-        .len = @intCast(u16, @ptrToInt(self.current) - @ptrToInt(self.start)),
-        .line = self.line,
-    };
+    if (token_type != TokenType.Eof) {
+        return Token{
+            .type = token_type,
+            .content = self.start,
+            .len = @intCast(u16, @ptrToInt(self.current) - @ptrToInt(self.start)),
+            .line = self.line,
+        };
+    } else {
+        return Token{
+            .type = token_type,
+            .content = "",
+            .len = 0,
+            .line = self.line,
+        };
+    }
 }
 
 pub fn error_token(self: *Scanner, message: []const u8) Token {
@@ -221,7 +227,7 @@ pub fn error_token(self: *Scanner, message: []const u8) Token {
 }
 
 pub fn is_at_end(self: *Scanner) bool {
-    return @ptrToInt(self.current) >= @ptrToInt(self.end);
+    return @ptrToInt(self.current) > @ptrToInt(self.end);
 }
 
 pub fn advance(self: *Scanner) u8 {

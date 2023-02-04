@@ -6,7 +6,7 @@ const Allocator = mem.Allocator;
 
 const ArrayList = std.ArrayListUnmanaged;
 
-pub const Opcode = enum(u8) { Return, Constant, Negate, Add, Subtract, Multiply, Divide, Nil, True, False, Not, Equal, Greater, Less, Print, Pop, DefineGlobal, GetGlobal, SetGlobal };
+pub const Opcode = enum(u8) { Return, Constant, Negate, Add, Subtract, Multiply, Divide, Nil, True, False, Not, Equal, Greater, Less, Print, Pop, DefineGlobal, GetGlobal, SetGlobal, GetLocal, SetLocal };
 
 pub const Chunk = struct {
     const Self = @This();
@@ -52,6 +52,7 @@ pub const Chunk = struct {
         while (offset < self.code.items.len) {
             offset = self.disassemble_instruction(offset);
         }
+        debug.print("== end {s} ==\n", .{name});
     }
 
     pub fn disassemble_instruction(self: *const Chunk, offset: usize) usize {
@@ -121,6 +122,12 @@ pub const Chunk = struct {
             .SetGlobal => {
                 return self.constant_instruction("OP_SET_GLOBAL", offset);
             },
+            .GetLocal => {
+                return self.byte_instruction("OP_GET_LOCAL", offset);
+            },
+            .SetLocal => {
+                return self.byte_instruction("OP_SET_LOCAL", offset);
+            },
         }
 
         return 0;
@@ -136,6 +143,12 @@ pub const Chunk = struct {
         debug.print("{s} {d} '", .{ name, constant });
         self.constants.items[constant].print(debug);
         debug.print("'\n", .{});
+        return offset + 2;
+    }
+
+    fn byte_instruction(self: *const Chunk, name: [:0]const u8, offset: usize) usize {
+        const slot = self.code.items[offset + 1];
+        debug.print("{s} {d}\n", .{ name, slot });
         return offset + 2;
     }
 };

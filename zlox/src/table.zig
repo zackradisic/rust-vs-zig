@@ -31,7 +31,7 @@ pub fn hash_string(key: [*]const u8, len: u32) u32 {
     var hash: u32 = 2166136261;
     for (key[0..len]) |c| {
         hash ^= c;
-        hash *= 16777619;
+        _ = @mulWithOverflow(u32, hash, 16777619, &hash);
     }
     return hash;
 }
