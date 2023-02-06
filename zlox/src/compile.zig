@@ -81,7 +81,7 @@ pub fn Compiler(comptime EW: type) type {
             .Identifier = ParseRule{ .prefix = Self.variable },
             .String = ParseRule{ .prefix = Self.string },
             .Number = ParseRule{ .prefix = Self.number },
-            .And = ParseRule{},
+            .And = ParseRule{ .infix = Self.and_, .precedence = Precedence.And },
             .Class = ParseRule{},
             .Else = ParseRule{},
             .False = ParseRule{ .prefix = Self.literal },
@@ -89,7 +89,7 @@ pub fn Compiler(comptime EW: type) type {
             .Fun = ParseRule{},
             .If = ParseRule{},
             .Nil = ParseRule{ .prefix = Self.literal },
-            .Or = ParseRule{},
+            .Or = ParseRule{ .infix = Self.or_, .precedence = Precedence.Or },
             .Print = ParseRule{},
             .Return = ParseRule{},
             .Super = ParseRule{},
@@ -142,6 +142,10 @@ pub fn Compiler(comptime EW: type) type {
             try self.current_chunk().write_byte(self.gc.allocator, byte, self.parser.previous.line);
         }
 
+        fn emit_u16(self: *Self, val: u16) Allocator.Error!void {
+            try self.chunk.write_u16(self.gc.allocator, val, self.parser.previous.line);
+        }
+
         fn emit_bytes(self: *Self, comptime n: usize, bytes: *const [n]u8) Allocator.Error!void {
             if (comptime n != bytes.len) {
                 @compileError("emit_bytes: n != bytes.len");
@@ -152,6 +156,24 @@ pub fn Compiler(comptime EW: type) type {
             }
         }
 
+        fn emit_loop(self: *Self, loop_start: usize) Allocator.Error!void {
+            try self.emit_op(.Loop);
+
+            const offset = self.chunk.code.items.len - loop_start + 2;
+            if (offset > std.math.maxInt(u16)) {
+                self.report_error("Loop body too large.");
+            }
+
+            try self.emit_u16(@truncate(u16, offset));
+        }
+
+        fn emit_jump(self: *Self, op: Opcode) Allocator.Error!usize {
+            try self.emit_op(op);
+            try self.emit_byte(0xff);
+            try self.emit_byte(0xff);
+            return self.current_chunk().code.items.len - 2;
+        }
+
         fn emit_return(self: *Self) Allocator.Error!void {
             try self.current_chunk().write_op(self.gc.allocator, .Return, self.parser.previous.line);
         }
@@ -159,6 +181,19 @@ pub fn Compiler(comptime EW: type) type {
         fn emit_constant(self: *Self, value: Value) Allocator.Error!void {
             const bytes = &[_]u8{ @enumToInt(Opcode.Constant), try self.make_constant(value) };
             try self.emit_bytes(bytes.len, bytes);
+        }
+
+        fn patch_jump(self: *Self, offset: usize) Allocator.Error!void {
+            const jump_usize = self.current_chunk().code.items.len - offset - 2;
+
+            if (jump_usize > std.math.maxInt(u16)) {
+                self.report_error("Too much code to jump over.");
+            }
+
+            const jump = @intCast(u16, jump_usize);
+
+            self.current_chunk().code.items[offset] = @truncate(u8, jump >> 8);
+            self.current_chunk().code.items[offset + 1] = @truncate(u8, jump);
         }
 
         fn make_constant(self: *Self, value: Value) Allocator.Error!u8 {
@@ -175,7 +210,7 @@ pub fn Compiler(comptime EW: type) type {
         }
 
         fn end(self: *Self) Allocator.Error!void {
-            if (comptime common.PRINT_CODE) {
+            if (comptime common.PRINT_CODE_AFTER_COMPILE) {
                 self.current_chunk().disassemble("code");
             }
             try self.emit_return();
@@ -231,6 +266,12 @@ pub fn Compiler(comptime EW: type) type {
         fn statement(self: *Self) Allocator.Error!void {
             if (self.match_tok(TokenType.Print)) {
                 try self.print_statement();
+            } else if (self.match_tok(TokenType.For)) {
+                try self.for_statement();
+            } else if (self.match_tok(TokenType.If)) {
+                try self.if_statement();
+            } else if (self.match_tok(TokenType.While)) {
+                try self.while_statement();
             } else if (self.match_tok(TokenType.LeftBrace)) {
                 self.begin_scope();
                 try self.block();
@@ -246,10 +287,91 @@ pub fn Compiler(comptime EW: type) type {
             try self.emit_op(.Pop);
         }
 
+        fn if_statement(self: *Self) Allocator.Error!void {
+            self.consume(TokenType.LeftParen, "Expect '(' after 'if'.");
+            try self.expression();
+            self.consume(TokenType.RightParen, "Expect ')' after condition.");
+
+            const then_jump = try self.emit_jump(.JumpIfFalse);
+            try self.emit_op(.Pop);
+            try self.statement();
+
+            const else_jump = try self.emit_jump(.Jump);
+
+            try self.patch_jump(then_jump);
+            try self.emit_op(.Pop);
+
+            if (self.match_tok(TokenType.Else)) {
+                try self.statement();
+            }
+
+            try self.patch_jump(else_jump);
+        }
+
         fn print_statement(self: *Self) Allocator.Error!void {
             try self.expression();
             self.consume(TokenType.Semicolon, "Expect ';' after value.");
             try self.emit_op(.Print);
+        }
+
+        fn for_statement(self: *Self) Allocator.Error!void {
+            self.begin_scope();
+
+            self.consume(.LeftParen, "Expect '(' after 'for'.");
+            if (self.match_tok(.Semicolon)) {
+                // No initializer.
+            } else if (self.match_tok(.Var)) {
+                try self.var_declaration();
+            } else {
+                try self.expression_statement();
+            }
+
+            var loop_start = self.current_chunk().code.items.len;
+            var exit_jump: i64 = -1;
+            if (!self.match_tok(.Semicolon)) {
+                try self.expression();
+                self.consume(.Semicolon, "Expect ';' after loop condition.");
+
+                exit_jump = @intCast(i64, try self.emit_jump(.JumpIfFalse));
+                try self.emit_op(.Pop);
+            }
+
+            if (!self.match_tok(.RightParen)) {
+                const body_jump = try self.emit_jump(.Jump);
+                const increment_start = self.current_chunk().code.items.len;
+                try self.expression();
+                try self.emit_op(.Pop);
+                self.consume(.RightParen, "Expect ')' after for clauses.");
+
+                try self.emit_loop(loop_start);
+                loop_start = increment_start;
+                try self.patch_jump(body_jump);
+            }
+
+            try self.statement();
+            try self.emit_loop(loop_start);
+
+            if (exit_jump != -1) {
+                try self.patch_jump(@intCast(usize, exit_jump));
+                try self.emit_op(.Pop); // Condition
+            }
+
+            try self.end_scope();
+        }
+
+        fn while_statement(self: *Self) Allocator.Error!void {
+            const loop_start = self.current_chunk().code.items.len;
+            self.consume(TokenType.LeftParen, "Expect '(' after 'while'.");
+            try self.expression();
+            self.consume(TokenType.RightParen, "Expect ')' after condition.");
+
+            const exit_jump = try self.emit_jump(.JumpIfFalse);
+            try self.emit_op(.Pop);
+            try self.statement();
+            try self.emit_loop(loop_start);
+
+            try self.patch_jump(exit_jump);
+            try self.emit_op(.Pop);
         }
 
         fn grouping(self: *Self, can_assign: bool) Allocator.Error!void {
@@ -353,6 +475,28 @@ pub fn Compiler(comptime EW: type) type {
             }
 
             self.add_local(name);
+        }
+
+        fn and_(self: *Self, can_assign: bool) Allocator.Error!void {
+            _ = can_assign;
+            const end_jump = try self.emit_jump(.JumpIfFalse);
+
+            try self.emit_op(.Pop);
+            try self.parse_precedence(.And);
+
+            try self.patch_jump(end_jump);
+        }
+
+        fn or_(self: *Self, can_assign: bool) Allocator.Error!void {
+            _ = can_assign;
+            const else_jump = try self.emit_jump(.JumpIfFalse);
+            const end_jump = try self.emit_jump(.Jump);
+
+            try self.patch_jump(else_jump);
+            try self.emit_op(.Pop);
+
+            try self.parse_precedence(.Or);
+            try self.patch_jump(end_jump);
         }
 
         fn add_local(self: *Self, name: Token) void {

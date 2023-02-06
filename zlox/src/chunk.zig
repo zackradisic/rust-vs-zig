@@ -6,7 +6,7 @@ const Allocator = mem.Allocator;
 
 const ArrayList = std.ArrayListUnmanaged;
 
-pub const Opcode = enum(u8) { Return, Constant, Negate, Add, Subtract, Multiply, Divide, Nil, True, False, Not, Equal, Greater, Less, Print, Pop, DefineGlobal, GetGlobal, SetGlobal, GetLocal, SetLocal };
+pub const Opcode = enum(u8) { Return, Constant, Negate, Add, Subtract, Multiply, Divide, Nil, True, False, Not, Equal, Greater, Less, Print, Pop, DefineGlobal, GetGlobal, SetGlobal, GetLocal, SetLocal, JumpIfFalse, Jump, Loop };
 
 pub const Chunk = struct {
     const Self = @This();
@@ -30,6 +30,11 @@ pub const Chunk = struct {
     pub fn write_byte(self: *Chunk, allocator: Allocator, byte: u8, line: u16) !void {
         try self.code.append(allocator, byte);
         try self.lines.append(allocator, line);
+    }
+
+    pub fn write_u16(self: *Chunk, allocator: Allocator, val: u16, line: u16) !void {
+        try self.write_byte(allocator, @intCast(u8, val >> 8), line);
+        try self.write_byte(allocator, @intCast(u8, val), line);
     }
 
     pub fn free(self: *Chunk, allocator: Allocator) void {
@@ -128,6 +133,15 @@ pub const Chunk = struct {
             .SetLocal => {
                 return self.byte_instruction("OP_SET_LOCAL", offset);
             },
+            .Jump => {
+                return self.jump_instruction("OP_JUMP", 1, offset);
+            },
+            .JumpIfFalse => {
+                return self.jump_instruction("OP_JUMP_IF_FALSE", 1, offset);
+            },
+            .Loop => {
+                return self.jump_instruction("OP_LOOP", -1, offset);
+            },
         }
 
         return 0;
@@ -140,9 +154,8 @@ pub const Chunk = struct {
 
     fn constant_instruction(self: *const Chunk, name: [:0]const u8, offset: usize) usize {
         const constant = self.code.items[offset + 1];
-        debug.print("{s} {d} '", .{ name, constant });
+        debug.print("{s} {d} ", .{ name, constant });
         self.constants.items[constant].print(debug);
-        debug.print("'\n", .{});
         return offset + 2;
     }
 
@@ -150,5 +163,11 @@ pub const Chunk = struct {
         const slot = self.code.items[offset + 1];
         debug.print("{s} {d}\n", .{ name, slot });
         return offset + 2;
+    }
+
+    fn jump_instruction(self: *const Chunk, name: [:0]const u8, sign: i32, offset: usize) usize {
+        const jump: u16 = (@intCast(u16, self.code.items[offset + 1]) << 8) | self.code.items[offset + 2];
+        debug.print("{s} {d} -> {d}\n", .{ name, offset, @intCast(i64, offset) + 3 + sign * jump });
+        return offset + 3;
     }
 };

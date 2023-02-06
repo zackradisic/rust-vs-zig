@@ -15,6 +15,7 @@ var VM = VMType.get_vm();
 const CompilerType = @import("compile.zig").Compiler;
 const Scanner = @import("scanner.zig");
 const GC = @import("gc.zig");
+const Value = @import("value.zig").Value;
 
 var general_purpose_allocator = std.heap.GeneralPurposeAllocator(.{}){};
 const alloc = general_purpose_allocator.allocator();
@@ -104,6 +105,88 @@ pub fn interpret(allocator: Allocator, source: []const u8) !*VMType {
     return VM;
 }
 
+pub fn interpret_without_teardown(allocator: Allocator, source: []const u8) !*VMType {
+    var gc = GC.init(allocator);
+    var chunk = try Chunk.init(allocator);
+    defer chunk.free(allocator);
+
+    var parser = Compiler.init_parser();
+    var scanner = Scanner.init(source);
+    var compiler = try Compiler.init(&gc, errw, source, &chunk, &scanner, &parser);
+    const compile_success = try compiler.compile();
+    if (!compile_success) {
+        return InterpretError.CompileError;
+    }
+    debug.assert(chunk.code.items.len == chunk.lines.items.len);
+
+    VM.init(gc, &chunk);
+    // errdefer {
+    //     _ = VM.free() catch {};
+    // }
+
+    try VM.run();
+    return VM;
+}
+
+test "if condition" {
+    const source =
+        \\var result = "fuck";
+        \\if (true) { result = "it worked"; } else { result = "it did not work"; }
+    ;
+    const vm = try interpret_without_teardown(alloc, source);
+    defer {
+        _ = vm.free() catch {};
+    }
+    try vm.run();
+}
+
+test "for loop" {
+    const source =
+        \\var result = 1;
+        \\for (var i = 0; i < 3; i = i + 1) {
+        \\    result = result * 2;
+        \\}
+    ;
+    const vm = try interpret_without_teardown(alloc, source);
+    defer {
+        _ = vm.free() catch {};
+    }
+    const result_str = try vm.get_string("result");
+    const i_str = try vm.get_string("i");
+
+    const result = vm.gc.globals.get(result_str) orelse @panic("result not found");
+    result.print(debug);
+    try std.testing.expect(Value.eq(result, Value.number(8)));
+
+    const i_val = vm.gc.globals.get(i_str) orelse Value.nil();
+    try std.testing.expect(Value.eq(i_val, Value.nil()));
+}
+
+test "while loop" {
+    const source =
+        \\var i = 0;
+        \\var result = 1;
+        \\while (i < 3) {
+        \\    result = result * 2;
+        \\    i = i + 1;
+        \\}
+    ;
+    const vm = try interpret_without_teardown(alloc, source);
+    defer {
+        _ = vm.free() catch {};
+    }
+    const result_str = try vm.get_string("result");
+    const i_str = try vm.get_string("i");
+
+    const i_val = vm.gc.globals.get(i_str) orelse @panic("i not found");
+    debug.print("i: {}\n", .{i_val});
+    try std.testing.expect(Value.eq(i_val, Value.number(3)));
+
+    const result = vm.gc.globals.get(result_str) orelse @panic("result not found");
+    debug.print("result: {}\n", .{result});
+    try std.testing.expect(Value.eq(result, Value.number(8)));
+}
+
 test "using variable in its own initializer fails" {
     const source =
         \\var a = "outer";
@@ -127,11 +210,6 @@ test "nested scope variables" {
         \\  }
         \\}
     ;
-    // var scan = Scanner.init(source);
-    // scan.scan();
-    const vm = interpret(alloc, source) catch |err| {
-        try std.testing.expect(InterpretError.CompileError == err);
-        return;
-    };
+    const vm = try interpret(alloc, source);
     _ = vm;
 }

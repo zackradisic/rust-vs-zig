@@ -57,15 +57,17 @@ pub fn run(self: *Self) !void {
             // Print stack trace
             const top = @ptrToInt(self.stack_top);
             const stack = @ptrToInt(self.stack[0..]);
-            if (top == stack) {
-                break :blk;
-            }
 
-            const idx = (top - 1 - stack) / @sizeOf(Value);
-            for (self.stack[0..idx]) |value| {
-                debug.print("[ ", .{});
-                value.print(debug);
-                debug.print(" ]\n", .{});
+            if (top == stack) {
+                debug.print("        STACK: []\n", .{});
+            } else {
+                const idx = (top - stack) / @sizeOf(Value);
+                debug.print("        STACK: ", .{});
+                debug.print(" [ ", .{});
+                for (self.stack[0..idx]) |value| {
+                    value.print(debug);
+                }
+                debug.print("                ]\n", .{});
             }
 
             // Print the current instruction
@@ -79,6 +81,20 @@ pub fn run(self: *Self) !void {
         const instruction = @intToEnum(Opcode, self.read_byte());
 
         switch (instruction) {
+            .Loop => {
+                const offset = self.read_u16();
+                self.ip -= offset;
+            },
+            .Jump => {
+                const offset = self.read_u16();
+                self.ip += offset;
+            },
+            .JumpIfFalse => {
+                const offset = self.read_u16();
+                if (self.peek(0).is_falsey()) {
+                    self.ip += offset;
+                }
+            },
             .SetLocal => {
                 const slot = self.read_byte();
                 self.stack[slot] = self.peek(0);
@@ -217,6 +233,12 @@ pub inline fn read_byte(self: *Self) u8 {
     return byte;
 }
 
+pub inline fn read_u16(self: *Self) u16 {
+    const byte1 = self.read_byte();
+    const byte2 = self.read_byte();
+    return (@intCast(u16, byte1) << 8) | @intCast(u16, byte2);
+}
+
 pub inline fn read_constant(self: *Self) Value {
     const byte = self.read_byte();
     return self.chunk.constants.items[byte];
@@ -225,6 +247,11 @@ pub inline fn read_constant(self: *Self) Value {
 pub inline fn read_string(self: *Self) *Obj.String {
     const byte = self.read_byte();
     return self.chunk.constants.items[byte].as_obj().?.narrow(Obj.String);
+}
+
+/// Only used for debugging purposes
+pub inline fn get_string(self: *Self, str: []const u8) !*Obj.String {
+    return self.gc.copy(@ptrCast([*]const u8, str), @intCast(u32, str.len));
 }
 
 pub fn runtime_error(self: *Self, message: []const u8) void {

@@ -1,1 +1,4 @@
-1 + 2
+var result = 1;
+for (var i = 0; i < 3; i = i + 1) {
+    result = result * 2;
+}
