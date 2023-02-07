@@ -6,7 +6,7 @@ const Allocator = mem.Allocator;
 
 const ArrayList = std.ArrayListUnmanaged;
 
-pub const Opcode = enum(u8) { Return, Constant, Negate, Add, Subtract, Multiply, Divide, Nil, True, False, Not, Equal, Greater, Less, Print, Pop, DefineGlobal, GetGlobal, SetGlobal, GetLocal, SetLocal, JumpIfFalse, Jump, Loop };
+pub const Opcode = enum(u8) { Return, Constant, Negate, Add, Subtract, Multiply, Divide, Nil, True, False, Not, Equal, Greater, Less, Print, Pop, DefineGlobal, GetGlobal, SetGlobal, GetLocal, SetLocal, JumpIfFalse, Jump, Loop, Call };
 
 pub const Chunk = struct {
     const Self = @This();
@@ -49,9 +49,7 @@ pub const Chunk = struct {
         return @intCast(u8, index);
     }
 
-    // [*:0]u8 is a pointer with an unknown size ending in a 0.
-    // [:0]u8 is a slice containing a pointer and a length.
-    pub fn disassemble(self: *const Chunk, name: [:0]const u8) void {
+    pub fn disassemble(self: *const Chunk, name: []const u8) void {
         debug.print("== {s} ==\n", .{name});
         var offset: usize = 0;
         while (offset < self.code.items.len) {
@@ -142,6 +140,9 @@ pub const Chunk = struct {
             .Loop => {
                 return self.jump_instruction("OP_LOOP", -1, offset);
             },
+            .Call => {
+                return self.byte_instruction("OP_CALL", offset);
+            },
         }
 
         return 0;
@@ -156,6 +157,7 @@ pub const Chunk = struct {
         const constant = self.code.items[offset + 1];
         debug.print("{s} {d} ", .{ name, constant });
         self.constants.items[constant].print(debug);
+        debug.print("\n", .{});
         return offset + 2;
     }
 

@@ -12,7 +12,10 @@ pub const Value = union(Type) {
     Obj: *Obj,
 
     pub fn print(self: *const Value, writer: anytype) void {
-        writer.print("{}\n", .{self});
+        switch (self.*) {
+            .Obj => self.Obj.print(writer),
+            else => writer.print("{}", .{self}),
+        }
     }
 
     pub fn eq(a: Value, b: Value) bool {

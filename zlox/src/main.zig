@@ -12,12 +12,15 @@ const Opcode = _chunk.Opcode;
 const VMType = @import("vm.zig");
 const InterpretError = VMType.InterpretError;
 var VM = VMType.get_vm();
+const FunctionType = @import("compile.zig").FunctionType;
 const CompilerType = @import("compile.zig").Compiler;
 const Scanner = @import("scanner.zig");
 const GC = @import("gc.zig");
 const Value = @import("value.zig").Value;
 
-var general_purpose_allocator = std.heap.GeneralPurposeAllocator(.{}){};
+var general_purpose_allocator = std.heap.GeneralPurposeAllocator(.{
+    .retain_metadata = true,
+}){};
 const alloc = general_purpose_allocator.allocator();
 
 const Compiler = CompilerType(std.fs.File.Writer);
@@ -83,49 +86,67 @@ pub fn run_file(allocator: Allocator, path: []const u8) !void {
 }
 
 pub fn interpret(allocator: Allocator, source: []const u8) !*VMType {
+    return interpret_impl(allocator, source, true);
+}
+
+pub fn interpret_without_teardown(allocator: Allocator, source: []const u8) !*VMType {
+    return interpret_impl(allocator, source, false);
+}
+
+fn interpret_impl(allocator: Allocator, source: []const u8, comptime do_teardown: bool) !*VMType {
     var gc = GC.init(allocator);
-    var chunk = try Chunk.init(allocator);
-    defer chunk.free(allocator);
 
     var parser = Compiler.init_parser();
     var scanner = Scanner.init(source);
-    var compiler = try Compiler.init(&gc, errw, source, &chunk, &scanner, &parser);
-    const compile_success = try compiler.compile();
-    if (!compile_success) {
-        return InterpretError.CompileError;
-    }
-    debug.assert(chunk.code.items.len == chunk.lines.items.len);
+    var compiler = try Compiler.init(&gc, errw, null, &scanner, &parser, FunctionType.Script);
+    const function = try compiler.compile() orelse return InterpretError.CompileError;
 
-    VM.init(gc, &chunk);
+    try VM.init(gc, function);
+    _ = VM.call(function, 0);
     defer {
-        _ = VM.free() catch {};
+        if (comptime do_teardown) {
+            _ = VM.free() catch {};
+        }
     }
 
     try VM.run();
     return VM;
 }
 
-pub fn interpret_without_teardown(allocator: Allocator, source: []const u8) !*VMType {
-    var gc = GC.init(allocator);
-    var chunk = try Chunk.init(allocator);
-    defer chunk.free(allocator);
-
-    var parser = Compiler.init_parser();
-    var scanner = Scanner.init(source);
-    var compiler = try Compiler.init(&gc, errw, source, &chunk, &scanner, &parser);
-    const compile_success = try compiler.compile();
-    if (!compile_success) {
-        return InterpretError.CompileError;
+test "call native fn" {
+    const source = 
+      \\var num = __dummy();
+      ;
+    const vm = try interpret_without_teardown(alloc, source);
+    defer {
+        _ = vm.free() catch {};
     }
-    debug.assert(chunk.code.items.len == chunk.lines.items.len);
+    const result_str = try vm.get_string("num");
+    const result = vm.gc.globals.get(result_str) orelse @panic("num not found");
+    try std.testing.expect(Value.eq(result, Value.number(420)));
+}
 
-    VM.init(gc, &chunk);
-    // errdefer {
-    //     _ = VM.free() catch {};
-    // }
-
-    try VM.run();
-    return VM;
+test "call fn" {
+    const source = 
+      \\fun add420(num) {
+      \\    return num + 420;
+      \\}
+      \\   
+      \\fun add69(num) {
+      \\    return num + 69;
+      \\}
+      \\  
+      \\var num = add420(1);
+      \\num = add69(num);
+      \\num = add420(num);
+      ;
+    const vm = try interpret_without_teardown(alloc, source);
+    defer {
+        _ = vm.free() catch {};
+    }
+    const result_str = try vm.get_string("num");
+    const result = vm.gc.globals.get(result_str) orelse @panic("num not found");
+    try std.testing.expect(Value.eq(result, Value.number(910)));
 }
 
 test "if condition" {
@@ -137,7 +158,10 @@ test "if condition" {
     defer {
         _ = vm.free() catch {};
     }
-    try vm.run();
+    const expected_str = try vm.get_string("it worked");
+    const result_str = try vm.get_string("result");
+    const result = vm.gc.globals.get(result_str) orelse @panic("result not found");
+    try std.testing.expect(Value.eq(result, Value.obj(expected_str.widen())));
 }
 
 test "for loop" {

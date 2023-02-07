@@ -41,6 +41,14 @@ pub fn free_object(self: *GC, obj: *Obj) !void {
             self.allocator.destroy(string.chars);
             self.allocator.destroy(string);
         },
+        .Function => {
+            const function = obj.narrow(Obj.Function);
+            function.chunk.free(self.allocator);
+            self.allocator.destroy(function);
+        },
+        .NativeFunction => {
+            self.allocator.destroy(obj);
+        }
     }
 }
 
@@ -71,8 +79,11 @@ pub fn alloc(self: *GC, comptime T: type, n: usize) ![]T {
 pub fn alloc_obj(self: *GC, comptime ParentType: type) !*ParentType {
     comptime validate_obj_pun_type(ParentType);
     const ptr = try self.allocator.create(ParentType);
+
+    ptr.widen().type = Obj.Type.from_obj(ParentType);
     ptr.widen().next = self.obj_list;
     self.obj_list = ptr.widen();
+
     return ptr;
 }
 
@@ -88,12 +99,9 @@ pub fn destroy(self: *GC, ptr: anytype) void {
 
 pub fn alloc_string(self: *GC, chars: [*]const u8, len: u32, hash: u32) !*Obj.String {
     var ptr = try self.alloc_obj(Obj.String);
-    ptr.* = Obj.String{
-        .obj = Obj{ .type = Obj.Type.String },
-        .len = len,
-        .chars = chars,
-        .hash = hash,
-    };
+    ptr.len = len;
+    ptr.chars = chars;
+    ptr.hash = hash;
     _ = try self.interned_strings.insert(self, ptr, Value.nil());
     return ptr;
 }
@@ -107,7 +115,7 @@ pub fn take_string(self: *GC, chars: [*]const u8, len: u32) !*Obj.String {
     return self.alloc_string(chars, len, hash);
 }
 
-pub fn copy(self: *GC, chars: [*]const u8, len: u32) !*Obj.String {
+pub fn copy_string(self: *GC, chars: [*]const u8, len: u32) !*Obj.String {
     const hash = Table.hash_string(chars, len);
     if (self.interned_strings.find_string(chars, len, hash)) |interned| {
         return interned;

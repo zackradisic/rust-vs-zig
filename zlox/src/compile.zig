@@ -35,18 +35,22 @@ pub const Local = struct {
     depth: i32,
 };
 
+pub const FunctionType = enum { Function, Script };
+
 pub fn Compiler(comptime EW: type) type {
     return struct {
         const Self = @This();
 
         gc: *GC,
         errw: EW,
+        enclosing: ?*Self,
         scanner: *Scanner,
         parser: *Parser,
-        chunk: *Chunk,
-        locals: [std.math.maxInt(u8)]Local,
+        function: *Obj.Function,
+        function_ty: FunctionType,
         local_count: u32,
         scope_depth: u32,
+        locals: [std.math.maxInt(u8)]Local,
 
         const ParseRule = struct {
             prefix: ?*const fn (*Self, bool) Allocator.Error!void = null,
@@ -59,6 +63,8 @@ pub fn Compiler(comptime EW: type) type {
         const rules = ParseRuleTable.init(.{
             .LeftParen = ParseRule{
                 .prefix = Self.grouping,
+                .infix = Self.call,
+                .precedence = Precedence.Call,
             },
             .RightParen = ParseRule{},
             .LeftBrace = ParseRule{},
@@ -101,18 +107,33 @@ pub fn Compiler(comptime EW: type) type {
             .Eof = ParseRule{},
         });
 
-        pub fn init(gc: *GC, errw: EW, source: []const u8, chunk: *Chunk, scanner: *Scanner, parser: *Parser) Allocator.Error!Self {
-            _ = source;
-            return Self{
+        pub fn init(gc: *GC, errw: EW, enclosing: ?*Self, scanner: *Scanner, parser: *Parser, function_ty: FunctionType) Allocator.Error!Self {
+            var function = try gc.alloc_obj(Obj.Function);
+            try function.init(gc);
+            var self = Self{
                 .gc = gc,
                 .errw = errw,
+                .enclosing = enclosing,
                 .scanner = scanner,
                 .parser = parser,
-                .chunk = chunk,
+                .function_ty = function_ty,
+                .function = function,
                 .locals = undefined,
                 .local_count = 0,
                 .scope_depth = 0,
             };
+
+            if (function_ty != FunctionType.Script) {
+                self.function.name = try gc.copy_string(parser.previous.content, parser.previous.len);
+            }
+
+            var local = &self.locals[0];
+            self.local_count += 1;
+            local.depth = 0;
+            local.name.content = "";
+            local.name.len = 0;
+
+            return self;
         }
 
         pub fn init_parser() Parser {
@@ -121,7 +142,7 @@ pub fn Compiler(comptime EW: type) type {
 
         // pub fn free();
 
-        pub fn compile(self: *Self) Allocator.Error!bool {
+        pub fn compile(self: *Self) Allocator.Error!?*Obj.Function {
             self.advance();
 
             while (!self.match_tok(.Eof)) {
@@ -129,9 +150,13 @@ pub fn Compiler(comptime EW: type) type {
             }
 
             // self.consume(TokenType.Eof, "Expect end of expression.");
-            try self.end();
+            const function = try self.end();
 
-            return !self.parser.had_error;
+            if (self.parser.had_error) {
+                return null;
+            } else {
+                return function;
+            }
         }
 
         fn emit_op(self: *Self, op: Opcode) Allocator.Error!void {
@@ -143,7 +168,7 @@ pub fn Compiler(comptime EW: type) type {
         }
 
         fn emit_u16(self: *Self, val: u16) Allocator.Error!void {
-            try self.chunk.write_u16(self.gc.allocator, val, self.parser.previous.line);
+            try self.current_chunk().write_u16(self.gc.allocator, val, self.parser.previous.line);
         }
 
         fn emit_bytes(self: *Self, comptime n: usize, bytes: *const [n]u8) Allocator.Error!void {
@@ -159,7 +184,7 @@ pub fn Compiler(comptime EW: type) type {
         fn emit_loop(self: *Self, loop_start: usize) Allocator.Error!void {
             try self.emit_op(.Loop);
 
-            const offset = self.chunk.code.items.len - loop_start + 2;
+            const offset = self.current_chunk().code.items.len - loop_start + 2;
             if (offset > std.math.maxInt(u16)) {
                 self.report_error("Loop body too large.");
             }
@@ -175,7 +200,8 @@ pub fn Compiler(comptime EW: type) type {
         }
 
         fn emit_return(self: *Self) Allocator.Error!void {
-            try self.current_chunk().write_op(self.gc.allocator, .Return, self.parser.previous.line);
+            try self.emit_op(.Nil);
+            try self.emit_op(.Return);
         }
 
         fn emit_constant(self: *Self, value: Value) Allocator.Error!void {
@@ -206,14 +232,16 @@ pub fn Compiler(comptime EW: type) type {
         }
 
         inline fn current_chunk(self: *Self) *Chunk {
-            return self.chunk;
+            return &self.function.chunk;
         }
 
-        fn end(self: *Self) Allocator.Error!void {
-            if (comptime common.PRINT_CODE_AFTER_COMPILE) {
-                self.current_chunk().disassemble("code");
-            }
+        fn end(self: *Self) Allocator.Error!*Obj.Function {
             try self.emit_return();
+            var function = self.function;
+            if (comptime common.PRINT_CODE_AFTER_COMPILE) {
+                self.current_chunk().disassemble(if (function.name) |name| name.chars[0..name.len] else "script");
+            }
+            return function;
         }
 
         fn begin_scope(self: *Self) void {
@@ -241,6 +269,40 @@ pub fn Compiler(comptime EW: type) type {
             self.consume(.RightBrace, "Expect '}' after block.");
         }
 
+        fn func(self: *Self, function_type: FunctionType) Allocator.Error!void {
+            var compiler = try Self.init(self.gc, self.errw, self, self.scanner, self.parser, function_type);
+            compiler.begin_scope();
+
+            compiler.consume(.LeftParen, "Expect '(' after function name.");
+            if (!compiler.check(.RightParen)) {
+                while(true) {
+                    if (compiler.function.arity == std.math.maxInt(u8)) {
+                        compiler.error_at_current("Cannot have more than 255 parameters.");
+                        break;
+                    }
+                    compiler.function.arity += 1;
+                    const constant = try compiler.parse_variable("Expect parameter name.");
+                    try compiler.define_variable(constant);
+                    if (!compiler.match_tok(.Comma)) {
+                        break;
+                    }
+                }
+            }
+            compiler.consume(.RightParen, "Expect ')' after function name.");
+            compiler.consume(.LeftBrace, "Expect '{' after function name.");
+            try compiler.block();
+
+            const function = try compiler.end();
+            try self.emit_bytes(2, &[_]u8{ @enumToInt(Opcode.Constant), try self.make_constant(Value.obj(function.widen())) });
+        }
+
+        fn fn_declaration(self: *Self) Allocator.Error!void {
+            const global = try self.parse_variable("Expect function name.");
+            self.mark_initialized();
+            try self.func(FunctionType.Function);
+            try self.define_variable(global);
+        }
+
         fn var_declaration(self: *Self) Allocator.Error!void {
             const global = try self.parse_variable("Expect variable name.");
             if (self.match_tok(TokenType.Equal)) {
@@ -253,7 +315,9 @@ pub fn Compiler(comptime EW: type) type {
         }
 
         fn declaration(self: *Self) Allocator.Error!void {
-            if (self.match_tok(TokenType.Var)) {
+            if (self.match_tok(TokenType.Fun)) {
+                try self.fn_declaration();
+            } else if (self.match_tok(TokenType.Var)) {
                 try self.var_declaration();
             } else {
                 try self.statement();
@@ -270,6 +334,8 @@ pub fn Compiler(comptime EW: type) type {
                 try self.for_statement();
             } else if (self.match_tok(TokenType.If)) {
                 try self.if_statement();
+            } else if (self.match_tok(TokenType.Return)) {
+                try self.return_statement();
             } else if (self.match_tok(TokenType.While)) {
                 try self.while_statement();
             } else if (self.match_tok(TokenType.LeftBrace)) {
@@ -312,6 +378,20 @@ pub fn Compiler(comptime EW: type) type {
             try self.expression();
             self.consume(TokenType.Semicolon, "Expect ';' after value.");
             try self.emit_op(.Print);
+        }
+
+        fn return_statement(self: *Self) Allocator.Error!void {
+            if (self.function_ty == FunctionType.Script) {
+                self.report_error("Cannot return from top-level code.");
+            }
+
+            if (self.match_tok(TokenType.Semicolon)) {
+                try self.emit_return();
+            } else {
+                try self.expression();
+                self.consume(TokenType.Semicolon, "Expect ';' after return value.");
+                try self.emit_op(.Return);
+            }
         }
 
         fn for_statement(self: *Self) Allocator.Error!void {
@@ -413,6 +493,12 @@ pub fn Compiler(comptime EW: type) type {
             }
         }
 
+        fn call(self: *Self, can_assign: bool) Allocator.Error!void {
+            _ = can_assign;
+            const arg_count = try self.argument_list();
+            try self.emit_bytes(2, &[_]u8{ @enumToInt(Opcode.Call),  arg_count });
+        }
+
         fn parse_precedence(self: *Self, precedence: Precedence) Allocator.Error!void {
             self.advance();
             const prefix_rule = Self.get_rule(self.parser.previous.type).prefix orelse {
@@ -446,7 +532,29 @@ pub fn Compiler(comptime EW: type) type {
         }
 
         fn mark_initialized(self: *Self) void {
+            if (self.scope_depth == 0) return;
             self.locals[self.local_count - 1].depth = @intCast(i32, self.scope_depth);
+        }
+
+        fn argument_list(self: *Self) Allocator.Error!u8 {
+            var arg_count: u8 = 0;
+
+            if (!self.check(.RightParen)) {
+                while(true) {
+                    try self.expression();
+                    if (arg_count == std.math.maxInt(u8)) {
+                        self.report_error("Can't have more than 255 arguments.");
+                    }
+                    arg_count += 1;
+                    if (!self.match_tok(.Comma)) {
+                        break;
+                    }
+                }
+            }
+
+            self.consume(.RightParen, "Expect ')' after arguments.");
+
+            return arg_count;
         }
 
         fn define_variable(self: *Self, global: u8) Allocator.Error!void {
@@ -526,7 +634,7 @@ pub fn Compiler(comptime EW: type) type {
         }
 
         fn identifier_constant(self: *Self, name: *Token) Allocator.Error!u8 {
-            return try self.make_constant(Value.obj((try self.gc.copy(name.content, name.len)).widen()));
+            return try self.make_constant(Value.obj((try self.gc.copy_string(name.content, name.len)).widen()));
         }
 
         fn identifiers_equal(a: *const Token, b: *const Token) bool {
@@ -555,7 +663,7 @@ pub fn Compiler(comptime EW: type) type {
 
         fn string(self: *Self, can_assign: bool) Allocator.Error!void {
             _ = can_assign;
-            const obj_string = try self.gc.copy(self.parser.previous.content + 1, self.parser.previous.len - 2);
+            const obj_string = try self.gc.copy_string(self.parser.previous.content + 1, self.parser.previous.len - 2);
             try self.emit_constant(Value.obj(obj_string.widen()));
         }
 
