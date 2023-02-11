@@ -48,6 +48,14 @@ pub fn free_object(self: *GC, obj: *Obj) !void {
         },
         .NativeFunction => {
             self.allocator.destroy(obj);
+        },
+        .Closure => {
+            const closure = obj.narrow(Obj.Closure);
+            self.allocator.free(closure.upvalues[0..closure.upvalues_len]);
+            self.allocator.destroy(obj);
+        },
+        .Upvalue => {
+            self.allocator.destroy(obj);
         }
     }
 }

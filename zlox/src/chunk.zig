@@ -1,12 +1,13 @@
 const Value = @import("value.zig").Value;
 const std = @import("std");
+const Obj = @import("obj.zig");
 const mem = std.mem;
 const debug = std.debug;
 const Allocator = mem.Allocator;
 
 const ArrayList = std.ArrayListUnmanaged;
 
-pub const Opcode = enum(u8) { Return, Constant, Negate, Add, Subtract, Multiply, Divide, Nil, True, False, Not, Equal, Greater, Less, Print, Pop, DefineGlobal, GetGlobal, SetGlobal, GetLocal, SetLocal, JumpIfFalse, Jump, Loop, Call };
+pub const Opcode = enum(u8) { Return, Constant, Negate, Add, Subtract, Multiply, Divide, Nil, True, False, Not, Equal, Greater, Less, Print, Pop, DefineGlobal, GetGlobal, SetGlobal, GetLocal, SetLocal, JumpIfFalse, Jump, Loop, Call, Closure, GetUpvalue, SetUpvalue, CloseUpvalue };
 
 pub const Chunk = struct {
     const Self = @This();
@@ -143,6 +144,33 @@ pub const Chunk = struct {
             .Call => {
                 return self.byte_instruction("OP_CALL", offset);
             },
+            .Closure => {
+                var ret = offset + 1;
+                const constant = self.code.items.ptr[ret];
+                ret += 1;
+                self.constants.items[constant].print(debug);
+
+                const function: *Obj.Function = self.constants.items[constant].as_obj().?.narrow(Obj.Function);
+                var j: usize = 0;
+                while (j < function.upvalue_count): (j += 1) {
+                    const is_local = self.code.items[ret];
+                    ret += 1;
+                    const index = self.code.items[ret];
+                    ret += 1;
+                    debug.print("{d:04}    |   {s} {d}\n", .{ret - 2, if (is_local == 1) "local" else "upvalue", index});
+                }
+
+                return ret;
+            },
+            .GetUpvalue => {
+                return self.byte_instruction("OP_GET_UPVALUE", offset);
+            },
+            .SetUpvalue => {
+                return self.byte_instruction("OP_SET_UPVALUE", offset);
+            },
+            .CloseUpvalue => {
+                return simple_instruction("OP_CLOSE_UPVALUE", offset);
+            }
         }
 
         return 0;

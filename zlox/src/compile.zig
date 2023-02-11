@@ -33,6 +33,12 @@ const Precedence = enum {
 pub const Local = struct {
     name: Token,
     depth: i32,
+    is_captured: bool,
+};
+
+pub const Upvalue = struct {
+    index: u8,
+    is_local: bool,
 };
 
 pub const FunctionType = enum { Function, Script };
@@ -49,6 +55,7 @@ pub fn Compiler(comptime EW: type) type {
         function: *Obj.Function,
         function_ty: FunctionType,
         local_count: u32,
+        upvalues: [std.math.maxInt(u8)]Upvalue,
         scope_depth: u32,
         locals: [std.math.maxInt(u8)]Local,
 
@@ -119,6 +126,7 @@ pub fn Compiler(comptime EW: type) type {
                 .function_ty = function_ty,
                 .function = function,
                 .locals = undefined,
+                .upvalues = undefined,
                 .local_count = 0,
                 .scope_depth = 0,
             };
@@ -132,6 +140,7 @@ pub fn Compiler(comptime EW: type) type {
             local.depth = 0;
             local.name.content = "";
             local.name.len = 0;
+            local.is_captured = false;
 
             return self;
         }
@@ -252,7 +261,11 @@ pub fn Compiler(comptime EW: type) type {
             self.scope_depth -= 1;
 
             while (self.local_count > 0 and self.locals[self.local_count - 1].depth > self.scope_depth) {
-                try self.emit_op(.Pop);
+                if (self.locals[self.local_count - 1].is_captured) {
+                    try self.emit_op(.CloseUpvalue);
+                } else { 
+                    try self.emit_op(.Pop);
+                }
                 self.local_count -= 1;
             }
         }
@@ -293,7 +306,13 @@ pub fn Compiler(comptime EW: type) type {
             try compiler.block();
 
             const function = try compiler.end();
-            try self.emit_bytes(2, &[_]u8{ @enumToInt(Opcode.Constant), try self.make_constant(Value.obj(function.widen())) });
+            try self.emit_bytes(2, &[_]u8{ @enumToInt(Opcode.Closure), try self.make_constant(Value.obj(function.widen())) });
+
+            var i: usize = 0;
+            while (i < function.upvalue_count): (i += 1) {
+                try self.emit_byte(if (compiler.upvalues[i].is_local) 1 else 0);
+                try self.emit_byte(compiler.upvalues[i].index);
+            } 
         }
 
         fn fn_declaration(self: *Self) Allocator.Error!void {
@@ -616,6 +635,7 @@ pub fn Compiler(comptime EW: type) type {
             self.local_count += 1;
             local.name = name;
             local.depth = -1;
+            local.is_captured = false;
         }
 
         fn resolve_local(self: *Self, name: *Token) i32 {
@@ -631,6 +651,48 @@ pub fn Compiler(comptime EW: type) type {
                 }
             }
             return -1;
+        }
+
+        fn resolve_upvalue(self: *Self, name: *Token) i32 {
+            const enclosing = self.enclosing orelse return -1;
+
+            const str = name.content[0..name.len];
+            _ = str;
+
+            const local = enclosing.resolve_local(name);
+            if (local != -1) {
+                enclosing.locals[@intCast(usize, local)].is_captured = true;
+                return self.add_upvalue(@intCast(u8, local), true);
+            }
+
+            const upvalue = enclosing.resolve_upvalue(name);
+            if (upvalue != -1) {
+                return self.add_upvalue(@intCast(u8, upvalue), false);
+            }
+
+            return -1;
+        }
+
+        fn add_upvalue(self: *Self, index: u8, is_local: bool) i32 {
+            const upvalue_count = self.function.upvalue_count;
+
+            var i: u32 = 0;
+            while (i < upvalue_count) {
+                const upvalue = &self.upvalues[i];
+                if (upvalue.index == index and upvalue.is_local == is_local) {
+                    return @intCast(i32, i);
+                }
+            }
+
+            if (upvalue_count == std.math.maxInt(u8)) {
+                self.report_error("Too many closure variables in function.");
+                return 0;
+            }
+
+            self.upvalues[upvalue_count].is_local = is_local;
+            self.upvalues[upvalue_count].index = index;
+            self.function.upvalue_count += 1;
+            return @intCast(i32, upvalue_count);
         }
 
         fn identifier_constant(self: *Self, name: *Token) Allocator.Error!u8 {
@@ -680,9 +742,15 @@ pub fn Compiler(comptime EW: type) type {
                 get_op = .GetLocal;
                 set_op = .SetLocal;
             } else {
-                arg = try self.identifier_constant(name);
-                get_op = .GetGlobal;
-                set_op = .SetGlobal;
+                arg = self.resolve_upvalue(name);
+                if (arg != -1) {
+                    get_op = .GetUpvalue;
+                    set_op = .SetUpvalue;
+                } else {
+                    arg = try self.identifier_constant(name);
+                    get_op = .GetGlobal;
+                    set_op = .SetGlobal;
+                }
             }
 
             if (can_assign and self.match_tok(.Equal)) {

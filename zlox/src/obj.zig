@@ -12,12 +12,16 @@ pub const Type = enum {
     String,
     Function,
     NativeFunction,
+    Closure,
+    Upvalue,
 
     pub fn obj_struct(comptime self: Type) type {
         return switch (self) {
             Type.String => String,
             Type.Function => Function,
-            Type.NativeFunction => NativeFunction
+            Type.NativeFunction => NativeFunction,
+            Type.Closure => Closure,
+            Type.Upvalue => Upvalue,
         };
     }
 
@@ -26,6 +30,8 @@ pub const Type = enum {
             String => Type.String,
             Function => Type.Function,
             NativeFunction => Type.NativeFunction,
+            Closure => Type.Closure,
+            Upvalue => Type.Upvalue,
             else => @compileError("invalid object type"),
         };
     }
@@ -78,19 +84,21 @@ pub const String = struct {
     }
 
     pub fn print(self: *String, writer: anytype) void {
-        writer.print("{s}", .{self.chars[0..self.len]});
+        writer.print("\"{s}\"", .{self.chars[0..self.len]});
     }
 };
 
 pub const Function = struct {
     obj: Obj,
     arity: u8,
+    upvalue_count: u32,
     name: ?*String,
     chunk: Chunk,
 
     pub fn init(self: *Function, gc: *GC) !void {
         self.arity = 0;
         self.name = null;
+        self.upvalue_count = 0;
         self.chunk = try Chunk.init(gc.allocator);
     }
 
@@ -101,6 +109,10 @@ pub const Function = struct {
     pub fn print(self: *Function, writer: anytype) void {
         const name = if (self.name) |name| name.chars[0..name.len] else return writer.print("<script>", .{});
         writer.print("<fn {s}>", .{name});
+    }
+
+    pub fn name_str(self: *Function) []const u8 {
+        return if (self.name) |name| name.chars[0..name.len] else "script";
     }
 };
 
@@ -121,6 +133,54 @@ pub const NativeFunction = struct {
     }
 
     pub fn widen(self: *NativeFunction) *Obj {
+        return @ptrCast(*Obj, self);
+    }
+};
+
+pub const Closure = struct {
+    obj: Obj,
+    function: *Function,
+    upvalues: [*]*Upvalue,
+    upvalues_len: u32,
+
+    pub fn init(self: *Closure, gc: *GC, function: *Function) !void {
+        self.function = function;
+        const upvalues = try gc.alloc(?*Upvalue, function.upvalue_count);
+        for (upvalues) |*upvalue| {
+            upvalue.* = std.mem.zeroes(?*Upvalue);
+        }
+        self.upvalues = @ptrCast([*]*Upvalue, upvalues);
+        self.upvalues_len = function.upvalue_count;
+    }
+
+    pub fn print(self: *Closure, writer: anytype) void {
+        const name = self.function.name_str();
+        writer.print("<closure> {s}\n", .{ name});
+    }
+
+    pub fn widen(self: *Closure) *Obj {
+        return @ptrCast(*Obj, self);
+    }
+};
+
+pub const Upvalue = struct {
+    obj: Obj,
+    location: *Value,
+    closed: Value,
+    next: ?*Upvalue = null,
+
+    pub fn init(self: *Upvalue, value: *Value) void {
+        self.location = value;
+        self.closed = Value.nil();
+        self.next = null;
+    }
+
+    pub fn print(self: *Upvalue, writer: anytype) void {
+        _ = self;
+        writer.print("upvalue", .{});
+    }
+
+    pub fn widen(self: *Upvalue) *Obj {
         return @ptrCast(*Obj, self);
     }
 };

@@ -17,6 +17,7 @@ const CompilerType = @import("compile.zig").Compiler;
 const Scanner = @import("scanner.zig");
 const GC = @import("gc.zig");
 const Value = @import("value.zig").Value;
+const Obj = @import("obj.zig");
 
 var general_purpose_allocator = std.heap.GeneralPurposeAllocator(.{
     .retain_metadata = true,
@@ -99,10 +100,12 @@ fn interpret_impl(allocator: Allocator, source: []const u8, comptime do_teardown
     var parser = Compiler.init_parser();
     var scanner = Scanner.init(source);
     var compiler = try Compiler.init(&gc, errw, null, &scanner, &parser, FunctionType.Script);
+    // note that this may get freed by gc depending on how we choose to implement it later
     const function = try compiler.compile() orelse return InterpretError.CompileError;
+    const closure = try gc.alloc_obj(Obj.Closure);
+    try closure.init(&gc, function);
 
-    try VM.init(gc, function);
-    _ = VM.call(function, 0);
+    try VM.init(gc, closure);
     defer {
         if (comptime do_teardown) {
             _ = VM.free() catch {};
@@ -111,6 +114,82 @@ fn interpret_impl(allocator: Allocator, source: []const u8, comptime do_teardown
 
     try VM.run();
     return VM;
+}
+
+test "upvalue closed" {
+    const source = 
+  \\fun makeClosure() {
+  \\  var a = 1;
+  \\  fun f() {
+  \\    a = a + 1;
+  \\    return a;
+  \\  }
+  \\  return f;
+  \\}
+  \\
+  \\var closure = makeClosure();
+  \\var first = closure();
+  \\var anotherClosure = makeClosure();
+  \\var second = anotherClosure();
+  \\var third = closure();
+  ;
+    const vm = try interpret_without_teardown(alloc, source);
+    defer {
+        _ = vm.free() catch {};
+    }
+    const first_str = try vm.get_string("first");
+    const second_str = try vm.get_string("second");
+    const third_str = try vm.get_string("third");
+
+    const value1 = vm.gc.globals.get(first_str) orelse @panic("first not found");
+    const value2 = vm.gc.globals.get(second_str) orelse @panic("second not found");
+    const value3 = vm.gc.globals.get(third_str) orelse @panic("third not found");
+
+    try std.testing.expect(Value.eq(value1, Value.number(2)));
+    try std.testing.expect(Value.eq(value2, Value.number(2)));
+    try std.testing.expect(Value.eq(value3, Value.number(3)));
+}
+
+test "set immediate upvalue" {
+    const source = 
+      \\fun outer() {
+      \\  var x = 420;
+      \\  fun inner() {
+      \\    x = x + 1;
+      \\    return x;
+      \\   }
+      \\ return inner();
+      \\}
+      \\var value = outer();
+    ;
+    const vm = try interpret_without_teardown(alloc, source);
+    defer {
+        _ = vm.free() catch {};
+    }
+    const result_str = try vm.get_string("value");
+    const result = vm.gc.globals.get(result_str) orelse @panic("value not found");
+    try std.testing.expect(Value.eq(result, Value.number(421)));
+}
+
+test "immediate upvalue" {
+    const source =
+      \\var result = "nothing";
+      \\fun outer() {
+      \\  var x = 420;
+      \\  fun inner() {
+      \\    result = x;
+      \\  }
+      \\  inner();
+      \\}
+      \\outer();
+      ;
+    const vm = try interpret_without_teardown(alloc, source);
+    defer {
+        _ = vm.free() catch {};
+    }
+    const result_str = try vm.get_string("result");
+    const result = vm.gc.globals.get(result_str) orelse @panic("result not found");
+    try std.testing.expect(Value.eq(result, Value.number(420)));
 }
 
 test "call native fn" {
