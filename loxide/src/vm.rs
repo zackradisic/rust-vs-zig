@@ -563,8 +563,8 @@ impl<'b> VM<'b> {
                 let closed = self.stack[offset];
                 (*upvalue_ptr).closed = closed.assume_init();
 
-                // but this doesn't? are we sidestepping miri by doing ptr addition above?
-                // (*upvalue_ptr).closed = *((*upvalue_ptr).location.as_ptr());
+                // but this doesn't? are we sidestepping miri somehow?
+                // (*upvalue_ptr).closed = *((*upvalue_ptr).location.as_ptr() as *const _);
 
                 (*upvalue_ptr).location =
                     NonNull::new(addr_of_mut!((*upvalue_ptr).closed)).unwrap();

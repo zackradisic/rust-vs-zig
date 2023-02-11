@@ -500,6 +500,23 @@ outer();"#;
 
         println!("{jump} NOOB: {chunk:?} JUMP: {val} {}", 2u16);
     }
+
+    #[test]
+    fn miri_test() {
+        let mut obj = Box::into_raw(Box::new(69));
+        let mut obj2 = unsafe { obj.as_mut().unwrap() };
+        let foo = unsafe { *obj };
+        *obj2 = 9999;
+    }
+    #[test]
+    fn miri_test2() {
+        let mut obj = Box::into_raw(Box::new(69));
+        let mut obj2 = unsafe { obj.as_mut().unwrap() };
+        unsafe {
+            *obj = 420;
+        };
+        *obj2 = 9999;
+    }
 }
 
 fn _f(_a: i32, _b: i32) -> i32 {
