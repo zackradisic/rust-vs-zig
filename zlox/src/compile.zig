@@ -116,7 +116,7 @@ pub fn Compiler(comptime EW: type) type {
 
         pub fn init(gc: *GC, errw: EW, enclosing: ?*Self, scanner: *Scanner, parser: *Parser, function_ty: FunctionType) Allocator.Error!Self {
             var function = try gc.alloc_obj(Obj.Function);
-            try function.init(gc);
+            try function.init(gc.as_allocator());
             var self = Self{
                 .gc = gc,
                 .errw = errw,
@@ -173,11 +173,11 @@ pub fn Compiler(comptime EW: type) type {
         }
 
         fn emit_byte(self: *Self, byte: u8) Allocator.Error!void {
-            try self.current_chunk().write_byte(self.gc.allocator, byte, self.parser.previous.line);
+            try self.current_chunk().write_byte(self.gc.as_allocator(), byte, self.parser.previous.line);
         }
 
         fn emit_u16(self: *Self, val: u16) Allocator.Error!void {
-            try self.current_chunk().write_u16(self.gc.allocator, val, self.parser.previous.line);
+            try self.current_chunk().write_u16(self.gc.as_allocator(), val, self.parser.previous.line);
         }
 
         fn emit_bytes(self: *Self, comptime n: usize, bytes: *const [n]u8) Allocator.Error!void {
@@ -232,7 +232,7 @@ pub fn Compiler(comptime EW: type) type {
         }
 
         fn make_constant(self: *Self, value: Value) Allocator.Error!u8 {
-            const constant = try self.current_chunk().add_constant(self.gc.allocator, value);
+            const constant = try self.current_chunk().add_constant(self.gc.as_allocator(), value);
             if (constant > std.math.maxInt(u8)) {
                 self.report_error("Too many constants in one chunk.");
                 return 0;
@@ -531,7 +531,7 @@ pub fn Compiler(comptime EW: type) type {
             while (precedence_int <= @enumToInt(Self.get_rule(self.parser.current.type).precedence)) {
                 self.advance();
                 const infix_rule = Self.get_rule(self.parser.previous.type).infix orelse {
-                    @panic(std.fmt.allocPrint(self.gc.allocator, "No infix expression found for {s}\n", .{self.parser.previous.type.name()}) catch unreachable);
+                    @panic(std.fmt.allocPrint(self.gc.as_allocator(), "No infix expression found for {s}\n", .{self.parser.previous.type.name()}) catch unreachable);
                 };
                 try infix_rule(self, can_assign);
             }

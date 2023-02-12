@@ -100,11 +100,11 @@ pub const Function = struct {
     name: ?*String,
     chunk: Chunk,
 
-    pub fn init(self: *Function, gc: *GC) !void {
+    pub fn init(self: *Function, allocator: Allocator) !void {
         self.arity = 0;
         self.name = null;
         self.upvalue_count = 0;
-        self.chunk = try Chunk.init(gc.allocator);
+        self.chunk = try Chunk.init(allocator);
     }
 
     pub inline fn widen(self: *Function) *Obj {
@@ -148,9 +148,9 @@ pub const Closure = struct {
     upvalues: [*]*Upvalue,
     upvalues_len: u32,
 
-    pub fn init(self: *Closure, gc: *GC, function: *Function) !void {
+    pub fn init(self: *Closure, allocator: Allocator, function: *Function) !void {
         self.function = function;
-        const upvalues = try gc.alloc(?*Upvalue, function.upvalue_count);
+        const upvalues = try allocator.alloc(?*Upvalue, function.upvalue_count);
         for (upvalues) |*upvalue| {
             upvalue.* = std.mem.zeroes(?*Upvalue);
         }

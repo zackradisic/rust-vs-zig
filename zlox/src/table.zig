@@ -1,8 +1,7 @@
 const std = @import("std");
-const Allocator = @import("std/mem").Allocator;
+const Allocator = std.mem.Allocator;
 const Obj = @import("obj.zig");
 const Value = @import("value.zig").Value;
-const GC = @import("gc.zig");
 
 const Table = @This();
 
@@ -18,9 +17,9 @@ pub fn init() Table {
     return .{};
 }
 
-pub fn free(self: *Table, gc: *GC) void {
+pub fn free(self: *Table, allocator: Allocator) void {
     if (self.entries) |entries| {
-        gc.free(entries[0..self.cap]);
+        allocator.free(entries[0..self.cap]);
     }
     self.count = 0;
     self.cap = 0;
@@ -46,10 +45,10 @@ pub fn get(self: *Table, key: *Obj.String) ?Value {
 }
 
 /// Returns true if the key is new.
-pub fn insert(self: *Table, gc: *GC, key: *Obj.String, val: Value) !bool {
+pub fn insert(self: *Table, allocator: Allocator, key: *Obj.String, val: Value) !bool {
     if (@intToFloat(f64, self.count + 1) > @intToFloat(f64, self.cap) * MAX_LOAD) {
         const new_cap = if (self.cap < 8) 8 else self.cap * 2;
-        try self.adjust_capacity(gc, new_cap);
+        try self.adjust_capacity(allocator, new_cap);
     }
 
     // Above if branch will always set entries.
@@ -64,11 +63,11 @@ pub fn insert(self: *Table, gc: *GC, key: *Obj.String, val: Value) !bool {
     return is_new_key;
 }
 
-pub fn add_all(self: *const Table, gc: *GC, to: *Table) !void {
+pub fn add_all(self: *const Table, allocator: Allocator, to: *Table) !void {
     const entries = self.entries_slice() orelse return;
     for (entries) |entry| {
         if (entry.key == null) continue;
-        try to.insert(gc, entry.key, entry.val);
+        try to.insert(allocator, entry.key, entry.val);
     }
 }
 
@@ -130,8 +129,8 @@ fn find_entry_impl(entries: []Entry, key: *Obj.String) *Entry {
     }
 }
 
-pub fn adjust_capacity(self: *Table, gc: *GC, new_cap: usize) !void {
-    var new_entries = try gc.alloc(Entry, new_cap);
+pub fn adjust_capacity(self: *Table, allocator: Allocator, new_cap: usize) !void {
+    var new_entries = try allocator.alloc(Entry, new_cap);
     for (new_entries) |*entry| {
         entry.key = null;
         entry.val = Value.nil();
@@ -147,7 +146,7 @@ pub fn adjust_capacity(self: *Table, gc: *GC, new_cap: usize) !void {
             dest.val = entry.val;
             count += 1;
         }
-        gc.free(entries);
+        allocator.free(entries);
     }
 
     self.entries = @ptrCast([*]Entry, new_entries);
