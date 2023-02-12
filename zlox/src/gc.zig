@@ -29,9 +29,8 @@ stack: ?*ValueStack = null,
 bytes_allocated: usize = 0,
 next_gc: usize = 1024 * 1024,
 
-pub fn init(gc: *GC, allocator: Allocator) !void {
+pub fn init(gc: *GC, allocator: Allocator, comptime run_gc: bool) !void {
     gc.inner_allocator = allocator;
-    gc.this_allocator = undefined;
     gc.obj_list = null;
     gc.open_upvalues = null;
     gc.call_frames = null;
@@ -40,11 +39,15 @@ pub fn init(gc: *GC, allocator: Allocator) !void {
     gc.globals = Table.init();
     gc.gray_stack = try ArrayList(*Obj).initCapacity(allocator, 64);
 
-    gc.this_allocator = Allocator.init(gc, alloc, resize, free);
+    gc.this_allocator = if (comptime run_gc) Allocator.init(gc, alloc, resize, free) else allocator;
 }
 
 pub inline fn as_allocator(self: *GC) Allocator {
     return self.this_allocator;
+}
+
+pub fn patch_allocator(self: *GC) void {
+    self.this_allocator = Allocator.init(self, alloc, resize, free);
 }
 
 fn alloc(self: *GC, len: usize, ptr_align: u29, len_align: u29, ret_addr: usize) ![]u8 {
@@ -69,7 +72,7 @@ fn free(self: *GC, buf: []u8, buf_align: u29, ret_addr: usize) void {
 }
 
 fn maybe_collect(self: *GC) !void {
-    if (comptime Conf.DEBUG_STRESS_GC and (self.bytes_allocated > self.next_gc)) {
+    if (comptime Conf.DEBUG_STRESS_GC or (self.bytes_allocated > self.next_gc)) {
         try self.collect();
     }
 }
@@ -86,26 +89,33 @@ pub fn collect(self: *GC) !void {
 
     if (comptime Conf.DEBUG_LOG_GC) {
         debug.print("-- gc end\n", .{});
+        var obj = self.obj_list;
+        while (obj) |o| {
+            debug.assert(!o.is_marked);
+            obj = o.next;
+        }
     }
+
+    self.next_gc = self.bytes_allocated *| Conf.GC_HEAP_GROW_FACTOR;
 }
 
 pub fn mark_roots(self: *GC) !void {
     if (self.stack) |values| {
         var slot = @ptrCast([*]Value, &values.stack[0]);
-        while (@ptrToInt(slot) < @ptrToInt(values.top)): (slot += 1) {
+        while (@ptrToInt(slot) < @ptrToInt(values.top)) : (slot += 1) {
             try self.mark_value(slot[0]);
         }
     }
 
     if (self.call_frames) |call_frames| {
         var i: usize = 0;
-        while (i < call_frames.count): (i += 1) {
+        while (i < call_frames.count) : (i += 1) {
             try self.mark_obj(call_frames.stack[i].closure.widen());
         }
     }
 
     var upvalue: ?*Obj.Upvalue = self.open_upvalues;
-    while (upvalue) |upval|: (upvalue = upval.next) {
+    while (upvalue) |upval| : (upvalue = upval.next) {
         try self.mark_obj(upval.widen());
     }
 
@@ -129,27 +139,28 @@ pub fn sweep(self: *GC) !void {
             previous = obj;
             object = obj.next;
         } else {
+            const unreached = obj;
+            object = obj.next;
             if (previous) |prev| {
-                prev.next = obj.next;
+                prev.next = object;
             } else {
-                self.obj_list = obj.next;
+                self.obj_list = object;
             }
 
-            try self.free_object(obj);
+            try self.free_object(unreached);
         }
     }
 }
 
 pub fn mark_table(self: *GC, table: *Table) !void {
     var i: usize = 0;
-    while (i < table.cap): (i += 1) {
+    while (i < table.cap) : (i += 1) {
         var entry: *Table.Entry = &table.entries.?[i];
         if (entry.key) |key| {
             try self.mark_obj(key.widen());
         }
         try self.mark_value(entry.val);
     }
-
 }
 
 pub fn mark_value(self: *GC, value: Value) !void {
@@ -159,11 +170,12 @@ pub fn mark_value(self: *GC, value: Value) !void {
     }
 }
 
-pub fn mark_obj(self: *GC, obj: *Obj) !void {
+pub fn mark_obj(self: *GC, maybe_obj: ?*Obj) !void {
+    const obj = maybe_obj orelse return;
     if (obj.is_marked) return;
 
     if (comptime Conf.DEBUG_LOG_GC) {
-        std.debug.print("{d} mark ", .{@ptrToInt(self)});
+        std.debug.print("{x} mark ", .{@ptrToInt(self)});
         Value.obj(obj).print(std.debug);
         std.debug.print("\n", .{});
     }
@@ -180,7 +192,7 @@ pub fn mark_array(self: *GC, array: []Value) !void {
 
 pub fn blacken_object(self: *GC, obj: *Obj) !void {
     if (comptime Conf.DEBUG_LOG_GC) {
-        debug.print("{d} blacken ", .{@ptrToInt(self)});
+        debug.print("{x} blacken ({s}) ", .{ @ptrToInt(self), @tagName(obj.type) });
         Value.obj(obj).print(debug);
         debug.print("\n", .{});
     }
@@ -203,7 +215,7 @@ pub fn blacken_object(self: *GC, obj: *Obj) !void {
             const closure: *Obj.Closure = obj.narrow(Obj.Closure);
             try self.mark_obj(closure.function.widen());
             var i: usize = 0;
-            while (i < closure.upvalues_len): (i += 1) {
+            while (i < closure.upvalues_len) : (i += 1) {
                 try self.mark_obj(closure.upvalues[i].widen());
             }
         },
@@ -224,28 +236,33 @@ pub fn free_objects(self: *GC) !void {
 }
 
 pub fn free_object(self: *GC, obj: *Obj) !void {
+    if (comptime Conf.DEBUG_LOG_GC) {
+        debug.print("{x} free type {s}: ", .{ @ptrToInt(obj), @tagName(obj.type) });
+        obj.print(debug);
+        debug.print("\n", .{});
+    }
     switch (obj.type) {
         .String => {
             const string = obj.narrow(Obj.String);
             self.as_allocator().destroy(string.chars);
-            self.free_obj(string);
+            self.as_allocator().destroy(string);
         },
         .Function => {
             const function = obj.narrow(Obj.Function);
             function.chunk.free(self.as_allocator());
-            self.free_obj(function);
+            self.as_allocator().destroy(function);
         },
         .NativeFunction => {
-            self.free_obj(obj.narrow(Obj.NativeFunction));
+            self.as_allocator().destroy(obj.narrow(Obj.NativeFunction));
         },
         .Closure => {
             const closure = obj.narrow(Obj.Closure);
             self.as_allocator().free(closure.upvalues[0..closure.upvalues_len]);
-            self.free_obj(closure);
+            self.as_allocator().destroy(closure);
         },
         .Upvalue => {
-            self.free_obj(obj.narrow(Obj.Upvalue));
-        }
+            self.as_allocator().destroy(obj.narrow(Obj.Upvalue));
+        },
     }
 }
 
@@ -279,25 +296,10 @@ pub fn alloc_obj(self: *GC, comptime ParentType: type) !*ParentType {
     self.obj_list = ptr.widen();
 
     if (comptime Conf.DEBUG_LOG_GC) {
-        debug.print("{d} allocate {d} for {s}\n", .{ @ptrToInt(ptr), @sizeOf(ParentType), @tagName(Obj.Type.from_obj(ParentType))});
+        debug.print("{d} allocate {d} for {s}\n", .{ @ptrToInt(ptr), @sizeOf(ParentType), @tagName(Obj.Type.from_obj(ParentType)) });
     }
 
     return ptr;
-}
-
-pub fn free_obj(self: *GC, ptr: anytype) void {
-    // const bytes = comptime blk: {
-    //     const Ptr = @typeInfo(@TypeOf(ptr));
-    //     if (@as(std.builtin.TypeId, Ptr) != std.builtin.TypeId.Pointer) {
-    //         @compileError("expected pointer");
-    //     }
-    //     if (Obj.Type.from_obj_safe(Ptr.Pointer.child) == null) {
-    //         @compileError("expected pointer to a narrow Obj type but got " ++ @typeName(Ptr.Pointer.child));
-    //     }
-    //     break :blk @sizeOf(Ptr.Pointer.child);
-    // };
-    // self.bytes_allocated -= bytes;
-    self.as_allocator().destroy(ptr);
 }
 
 pub fn alloc_string(self: *GC, chars: [*]const u8, len: u32, hash: u32) !*Obj.String {

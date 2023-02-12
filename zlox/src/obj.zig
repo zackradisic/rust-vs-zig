@@ -112,8 +112,11 @@ pub const Function = struct {
     }
 
     pub fn print(self: *Function, writer: anytype) void {
-        const name = if (self.name) |name| name.chars[0..name.len] else return writer.print("<script>", .{});
-        writer.print("<fn {s}>", .{name});
+        _ = self;
+        // TODO: unfuck this
+        // const name = if (self.name) |name| name.chars[0..name.len] else return writer.print("<script>", .{});
+        // writer.print("<fn {s}>", .{name});
+        writer.print("<fn >", .{});
     }
 
     pub fn name_str(self: *Function) []const u8 {
@@ -148,14 +151,26 @@ pub const Closure = struct {
     upvalues: [*]*Upvalue,
     upvalues_len: u32,
 
-    pub fn init(self: *Closure, allocator: Allocator, function: *Function) !void {
-        self.function = function;
-        const upvalues = try allocator.alloc(?*Upvalue, function.upvalue_count);
+    pub fn init(gc: *GC, function: *Function) !*Closure {
+        const upvalues = try gc.as_allocator().alloc(?*Upvalue, function.upvalue_count);
         for (upvalues) |*upvalue| {
             upvalue.* = std.mem.zeroes(?*Upvalue);
         }
-        self.upvalues = @ptrCast([*]*Upvalue, upvalues);
-        self.upvalues_len = function.upvalue_count;
+        const self: Closure = .{
+            .obj = Obj{
+                .type = Type.Closure,
+                .is_marked = false,
+                .next = null,
+            },
+            .function = function,
+            .upvalues = @ptrCast([*]*Upvalue, upvalues),
+            .upvalues_len = function.upvalue_count,
+        };
+
+        var ptr = try gc.alloc_obj(Obj.Closure);
+        ptr.* = self;
+
+        return ptr;
     }
 
     pub fn print(self: *Closure, writer: anytype) void {

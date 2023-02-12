@@ -48,6 +48,16 @@ pub const CallFrameStack = struct {
 pub const ValueStack = struct {
     stack: [STACK_MAX]Value,
     top: [*]Value,
+
+    pub inline fn push(self: *ValueStack, value: Value) void {
+        self.top[0] = value;
+        self.top += 1;
+    }
+
+    pub inline fn pop(self: *ValueStack) Value {
+        self.top -= 1;
+        return (self.top)[0];
+    }
 };
 
 const Self = @This();
@@ -150,8 +160,7 @@ pub fn run(self: *Self) !void {
             },
             .Closure => {
                 var function = frame.read_constant().as_obj().?.narrow(Obj.Function);
-                var closure = try self.gc.alloc_obj(Obj.Closure);
-                try closure.init(self.gc.as_allocator(), function);
+                var closure = try Obj.Closure.init(self.gc, function);
                 self.push(Value.obj(closure.widen()));
                 var i: usize = 0;
                 while (i < closure.upvalues_len): (i += 1) {
@@ -406,13 +415,11 @@ pub inline fn peek(self: *Self, distance: usize) Value {
 }
 
 pub inline fn push(self: *Self, value: Value) void {
-    self.values.top[0] = value;
-    self.values.top += 1;
+    self.values.push(value);
 }
 
 pub inline fn pop(self: *Self) Value {
-    self.values.top -= 1;
-    return (self.values.top)[0];
+    return self.values.pop();
 }
 
 /// Only used for debugging purposes

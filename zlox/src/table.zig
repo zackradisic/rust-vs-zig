@@ -171,3 +171,16 @@ pub fn entries_slice(self: *Table) ?[]Entry {
 
     return null;
 }
+
+pub fn print(self: *Table, name: []const u8, writer: anytype) void {
+    const entries = self.entries_slice() orelse return;
+
+    writer.print("== begin {s} ==\n", .{name});
+    for (entries) |entry| {
+        if (entry.key == null) continue;
+        writer.print("{s}: ", .{entry.key.?.as_string()});
+        entry.val.print(writer);
+        writer.print(", ", .{});
+    }
+    writer.print("\n== end {s} ==\n", .{name});
+}

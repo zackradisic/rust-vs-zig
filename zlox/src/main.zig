@@ -96,18 +96,17 @@ pub fn interpret_without_teardown(allocator: Allocator, source: []const u8) !*VM
 
 fn interpret_impl(allocator: Allocator, source: []const u8, comptime do_teardown: bool) !*VMType {
     var gc: *GC = try allocator.create(GC);
-    try gc.init(allocator);
-    const gc_allocator = gc.as_allocator();
+    try gc.init(allocator, false);
 
     var parser = Compiler.init_parser();
     var scanner = Scanner.init(source);
     var compiler = try Compiler.init(gc, errw, null, &scanner, &parser, FunctionType.Script);
     // note that this may get freed by gc depending on how we choose to implement it later
     const function = try compiler.compile() orelse return InterpretError.CompileError;
-    const closure = try gc.alloc_obj(Obj.Closure);
-    try closure.init(gc_allocator, function);
+    const closure = try Obj.Closure.init(gc, function);
 
     try VM.init(gc, closure);
+    gc.patch_allocator();
     defer {
         if (comptime do_teardown) {
             _ = VM.free() catch {};

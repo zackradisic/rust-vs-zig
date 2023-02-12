@@ -3,3 +3,4 @@ pub const TRACING = true;
 pub const SAFE_OBJ_CAST = false;
 pub const DEBUG_STRESS_GC = true;
 pub const DEBUG_LOG_GC = true;
+pub const GC_HEAP_GROW_FACTOR = 2;
