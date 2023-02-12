@@ -6,7 +6,7 @@ const _chunk = @import("chunk.zig");
 const Chunk = _chunk.Chunk;
 const Opcode = _chunk.Opcode;
 const Value = @import("value.zig").Value;
-const TRACING = @import("common.zig").TRACING;
+const Conf = @import("conf.zig");
 const Obj = @import("obj.zig");
 const GC = @import("gc.zig");
 const Table = @import("table.zig");
@@ -86,6 +86,67 @@ pub fn init(self: *Self, gc: GC, closure: *Obj.Closure) !void {
 
 }
 
+pub fn collect(self: *Self) !void {
+    if (comptime Conf.DEBUG_LOG_GC) {
+        debug.print("-- gc begin\n", .{});
+    }
+
+    try self.mark_roots();
+    try self.trace_references();
+    self.gc.interned_strings.remove_white();
+    try self.sweep();
+
+    if (comptime Conf.DEBUG_LOG_GC) {
+        debug.print("-- gc end\n", .{});
+    }
+}
+
+pub fn mark_roots(self: *Self) !void {
+    var slot = @ptrCast([*]Value, &self.stack[0]);
+    while (@ptrToInt(slot) < @ptrToInt(self.stack_top)): (slot += 1) {
+        try self.gc.mark_value(slot[0]);
+    }
+
+    var i: usize = 0;
+    while (i < self.call_frame_count): (i += 1) {
+        try self.gc.mark_obj(self.call_frames[i].closure.widen());
+    }
+
+    var upvalue: ?*Obj.Upvalue = self.openup_values;
+    while (upvalue) |upval|: (upvalue = upval.next) {
+        try self.gc.mark_obj(upval.widen());
+    }
+
+    try self.gc.mark_table(&self.gc.globals);
+}
+
+pub fn trace_references(self: *Self) !void {
+    while (self.gc.gray_stack.items.len > 0) {
+        const obj = self.gc.gray_stack.pop();
+        try self.gc.blacken_object(obj);
+    }
+}
+
+pub fn sweep(self: *Self) !void {
+    var previous: ?*Obj = null;
+    var object: ?*Obj = self.objs;
+
+    while (object) |obj| {
+        if (obj.is_marked) {
+            obj.is_marked = false;
+            previous = obj;
+            object = obj.next;
+        } else {
+            if (previous) |prev| {
+                prev.next = obj.next;
+            } else {
+                self.objs = obj.next;
+            }
+
+            try self.gc.free_object(obj);
+        }
+    }
+}
 
 pub fn free(self: *Self) !void {
     try self.gc.free_objects();
@@ -94,7 +155,7 @@ pub fn free(self: *Self) !void {
 pub fn run(self: *Self) !void {
     var frame: *CallFrame = &self.call_frames[self.call_frame_count - 1];
     while (true) {
-        if (comptime TRACING) blk: {
+        if (comptime Conf.TRACING) blk: {
             // Print stack trace
             const top: usize = @ptrToInt(self.stack_top);
             const stack: usize = @ptrToInt(self.stack[0..]);
@@ -126,6 +187,7 @@ pub fn run(self: *Self) !void {
         }
 
         const instruction = @intToEnum(Opcode, frame.read_byte());
+        try self.collect();
 
         switch (instruction) {
             .CloseUpvalue => {

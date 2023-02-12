@@ -95,7 +95,7 @@ pub fn interpret_without_teardown(allocator: Allocator, source: []const u8) !*VM
 }
 
 fn interpret_impl(allocator: Allocator, source: []const u8, comptime do_teardown: bool) !*VMType {
-    var gc = GC.init(allocator);
+    var gc = try GC.init(allocator);
 
     var parser = Compiler.init_parser();
     var scanner = Scanner.init(source);

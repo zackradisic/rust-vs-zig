@@ -11,7 +11,7 @@ const Chunk = _chunk.Chunk;
 const Opcode = _chunk.Opcode;
 
 const Value = @import("value.zig").Value;
-const common = @import("common.zig");
+const Conf = @import("conf.zig");
 const GC = @import("gc.zig");
 
 const Obj = @import("obj.zig");
@@ -247,7 +247,7 @@ pub fn Compiler(comptime EW: type) type {
         fn end(self: *Self) Allocator.Error!*Obj.Function {
             try self.emit_return();
             var function = self.function;
-            if (comptime common.PRINT_CODE_AFTER_COMPILE) {
+            if (comptime Conf.PRINT_CODE_AFTER_COMPILE) {
                 self.current_chunk().disassemble(if (function.name) |name| name.chars[0..name.len] else "script");
             }
             return function;

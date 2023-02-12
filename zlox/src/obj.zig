@@ -1,5 +1,5 @@
 const std = @import("std");
-const Conf = @import("common.zig");
+const Conf = @import("conf.zig");
 const Chunk = @import("chunk.zig").Chunk;
 const GC = @import("gc.zig");
 const Value = @import("value.zig").Value;
@@ -26,18 +26,23 @@ pub const Type = enum {
     }
 
     pub fn from_obj(comptime ObjType: type) Type {
+        return Type.from_obj_safe(ObjType) orelse @panic("invalid obj type");
+    }
+
+    pub fn from_obj_safe(comptime ObjType: type) ?Type {
         return switch (ObjType) {
             String => Type.String,
             Function => Type.Function,
             NativeFunction => Type.NativeFunction,
             Closure => Type.Closure,
             Upvalue => Type.Upvalue,
-            else => @compileError("invalid object type"),
+            else => null,
         };
     }
 };
 
 type: Type,
+is_marked: bool,
 next: ?*Obj = null,
 
 pub fn narrow(self: *Obj, comptime ParentType: type) *ParentType {
