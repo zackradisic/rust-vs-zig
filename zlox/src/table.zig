@@ -155,6 +155,16 @@ pub fn adjust_capacity(self: *Table, gc: *GC, new_cap: usize) !void {
     self.count = count;
 }
 
+pub fn remove_white(self: *Table) void {
+    var i: usize = 0;
+    while (i < self.cap): (i += 1) {
+        var entry = self.entries.?[i];
+        if (entry.key != null and !entry.key.?.obj.is_marked) {
+            _ = self.delete(entry.key.?);
+        }
+    }
+}
+
 pub fn entries_slice(self: *Table) ?[]Entry {
     if (self.entries) |entries| {
         return entries[0..self.cap];
