@@ -77,7 +77,7 @@ pub fn Compiler(comptime EW: type) type {
             .LeftBrace = ParseRule{},
             .RightBrace = ParseRule{},
             .Comma = ParseRule{},
-            .Dot = ParseRule{},
+            .Dot = ParseRule{ .infix = Self.dot, .precedence = Precedence.Call },
             .Minus = ParseRule{ .prefix = Self.unary, .infix = Self.binary, .precedence = Precedence.Term },
             .Plus = ParseRule{ .infix = Self.binary, .precedence = Precedence.Term },
             .Semicolon = ParseRule{},
@@ -315,6 +315,18 @@ pub fn Compiler(comptime EW: type) type {
             } 
         }
 
+        fn class_declaration(self: *Self) Allocator.Error!void {
+            self.consume(TokenType.Identifier, "Expect class name.");
+            const name_constant = try self.identifier_constant(&self.parser.previous);
+            self.declare_variable();
+
+            try self.emit_bytes(2, &[_]u8{ @enumToInt(Opcode.Class), name_constant });
+            try self.define_variable(name_constant);
+
+            self.consume(TokenType.LeftBrace, "Expect '{' before class body.");
+            self.consume(TokenType.RightBrace, "Expect '}' before class body.");
+        }
+
         fn fn_declaration(self: *Self) Allocator.Error!void {
             const global = try self.parse_variable("Expect function name.");
             self.mark_initialized();
@@ -334,7 +346,9 @@ pub fn Compiler(comptime EW: type) type {
         }
 
         fn declaration(self: *Self) Allocator.Error!void {
-            if (self.match_tok(TokenType.Fun)) {
+            if (self.match_tok(TokenType.Class)) {
+                try self.class_declaration();
+            } else if (self.match_tok(TokenType.Fun)) {
                 try self.fn_declaration();
             } else if (self.match_tok(TokenType.Var)) {
                 try self.var_declaration();
@@ -516,6 +530,18 @@ pub fn Compiler(comptime EW: type) type {
             _ = can_assign;
             const arg_count = try self.argument_list();
             try self.emit_bytes(2, &[_]u8{ @enumToInt(Opcode.Call),  arg_count });
+        }
+
+        fn dot(self: *Self, can_assign: bool) Allocator.Error!void {
+            self.consume(TokenType.Identifier, "Expect property name after '.'.");
+            const name = try self.identifier_constant(&self.parser.previous);
+            
+            if (can_assign and self.match_tok(TokenType.Equal)) {
+                try self.expression();
+                try self.emit_bytes(2, &[_]u8{ @enumToInt(Opcode.SetProperty), name });
+            } else {
+                try self.emit_bytes(2, &[_]u8{ @enumToInt(Opcode.GetProperty), name });
+            }
         }
 
         fn parse_precedence(self: *Self, precedence: Precedence) Allocator.Error!void {

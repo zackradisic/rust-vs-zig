@@ -143,6 +143,37 @@ pub fn run(self: *Self) !void {
         const instruction = @intToEnum(Opcode, frame.read_byte());
 
         switch (instruction) {
+            .GetProperty => {
+                const instance: *Obj.Instance = self.peek(0).as_obj_narrowed(Obj.Instance) orelse {
+                    self.runtime_error("Only instances have properties.");
+                    return error.RuntimeError;
+                };
+                const name = frame.read_string();
+
+                if (instance.fields.get(name)) |value| {
+                    _ = self.pop();
+                    self.push(value);
+                } else {
+                    self.runtime_error_fmt("Undefined property '{s}'.", .{name.as_string()});
+                    return error.RuntimeError;
+                }
+            },
+            .SetProperty => {
+                const instance: *Obj.Instance = self.peek(1).as_obj_narrowed(Obj.Instance) orelse {
+                    self.runtime_error("Only instances have properties.");
+                    return error.RuntimeError;
+                };
+
+                _ = try instance.fields.insert(self.gc.as_allocator(), frame.read_string(), self.peek(0));
+
+                const val = self.pop();
+                self.push(val);
+            },
+            .Class => {
+                const class_name = frame.read_string();
+                const class = try Obj.Class.init(self.gc, class_name);
+                self.push(Value.obj(class.widen()));
+            },
             .CloseUpvalue => {
                 self.close_upvalues(self.values.top - 1);
                 _ = self.pop();
@@ -171,12 +202,11 @@ pub fn run(self: *Self) !void {
                     } else {
                         closure.upvalues[i] = frame.closure.upvalues[index];
                     }
-
                 }
             },
             .Call => {
                 const arg_count = frame.read_byte();
-                if (!self.call_value(self.peek(arg_count), arg_count)) {
+                if (!(try self.call_value(self.peek(arg_count), arg_count))) {
                     return InterpretError.RuntimeError;
                 }
                 frame = &self.call_frames.stack[self.call_frames.count - 1];
@@ -370,9 +400,15 @@ pub fn close_upvalues(self: *Self, last: [*]Value) void {
    }
 }
 
-pub fn call_value(self: *Self, callee: Value, arg_count: u8) bool {
+pub fn call_value(self: *Self, callee: Value, arg_count: u8) !bool {
     if (callee.as_obj()) |obj| {
         switch (obj.type) {
+            .Class => {
+                const class: *Obj.Class = obj.narrow(Obj.Class);
+                const instance = try Obj.Instance.init(self.gc, class);
+                (self.values.top - arg_count - 1)[0] = Value.obj(instance.widen());
+                return true;
+            },
             .Closure => {
                 const closure = obj.narrow(Obj.Closure);
                 return self.call(closure, arg_count);

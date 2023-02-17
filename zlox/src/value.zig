@@ -80,6 +80,14 @@ pub const Value = union(Type) {
             else => return null,
         }
     }
+
+    pub fn as_obj_narrowed(self: Value, comptime ParentType: type) ?*ParentType {
+        if (self.as_obj()) |object| {
+            return object.safe_narrow(ParentType);
+        } 
+
+        return null;
+    }
 };
 
 pub fn main() !void {

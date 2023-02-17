@@ -117,6 +117,28 @@ fn interpret_impl(allocator: Allocator, source: []const u8, comptime do_teardown
     return VM;
 }
 
+test "instance get set" {
+    const source =
+  \\class Pair {}
+  \\
+  \\var pair = Pair();
+  \\pair.first = 1;
+  \\pair.second = 2;
+  \\var result = pair.first + pair.second;  
+  ;
+
+  const vm = try interpret_without_teardown(alloc, source);
+  defer {
+    _ = vm.free() catch {};
+  }
+
+  const result_str = try vm.get_string("result");
+  const value = vm.gc.globals.get(result_str) orelse @panic("result not found");
+
+  value.print(debug);
+  try std.testing.expect(Value.eq(value, Value.number(3)));
+}
+
 test "upvalue closed" {
     const source = 
   \\fun makeClosure() {

@@ -3,6 +3,7 @@ const Conf = @import("conf.zig");
 const Chunk = @import("chunk.zig").Chunk;
 const GC = @import("gc.zig");
 const Value = @import("value.zig").Value;
+const Table = @import("table.zig");
 const mem = std.mem;
 const Allocator = mem.Allocator;
 
@@ -14,6 +15,8 @@ pub const Type = enum {
     NativeFunction,
     Closure,
     Upvalue,
+    Class,
+    Instance,
 
     pub fn obj_struct(comptime self: Type) type {
         return switch (self) {
@@ -22,6 +25,8 @@ pub const Type = enum {
             Type.NativeFunction => NativeFunction,
             Type.Closure => Closure,
             Type.Upvalue => Upvalue,
+            Type.Class => Class,
+            Type.Instance => Instance,
         };
     }
 
@@ -36,6 +41,8 @@ pub const Type = enum {
             NativeFunction => Type.NativeFunction,
             Closure => Type.Closure,
             Upvalue => Type.Upvalue,
+            Class => Type.Class,
+            Instance => Type.Instance,
             else => null,
         };
     }
@@ -68,6 +75,7 @@ pub fn print(self: *Obj, writer: anytype) void {
         },
     }
 }
+
 
 pub const String = struct {
     obj: Obj,
@@ -201,6 +209,66 @@ pub const Upvalue = struct {
     }
 
     pub fn widen(self: *Upvalue) *Obj {
+        return @ptrCast(*Obj, self);
+    }
+};
+
+pub const Class = struct {
+    obj: Obj,
+    name: *String,
+
+    pub fn init(gc: *GC, name: *String) !*Class {
+        const self: Class = .{
+            .obj = Obj{
+                .type = Type.Class,
+                .is_marked = false,
+                .next = null,
+            },
+            .name = name,
+        };
+
+        var ptr = try gc.alloc_obj(Obj.Class);
+        ptr.* = self;
+
+        return ptr;
+    }
+
+    pub fn print(self: *Class, writer: anytype) void {
+        writer.print("class {s}", .{self.name.as_string()});
+    }   
+
+    pub fn widen(self: *Class) *Obj {
+        return @ptrCast(*Obj, self);
+    }
+};
+
+pub const Instance = struct {
+    obj: Obj,
+    class: *Class,
+    fields: Table,
+
+    pub fn init(gc: *GC, class: *Class) !*Instance {
+        const self: Instance = .{
+            .obj = Obj{
+                .type = Type.Instance,
+                .is_marked = false,
+                .next = null,
+            },
+            .class = class,
+            .fields = Table.init(),
+        };
+
+        var ptr = try gc.alloc_obj(Obj.Instance);
+        ptr.* = self;
+
+        return ptr;
+    }
+
+    pub fn print(self: *Instance, writer: anytype) void {
+        writer.print("{s} instance", .{self.class.name.as_string()});
+    }   
+
+    pub fn widen(self: *Instance) *Obj {
         return @ptrCast(*Obj, self);
     }
 };

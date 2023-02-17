@@ -7,7 +7,7 @@ const Allocator = mem.Allocator;
 
 const ArrayList = std.ArrayListUnmanaged;
 
-pub const Opcode = enum(u8) { Return, Constant, Negate, Add, Subtract, Multiply, Divide, Nil, True, False, Not, Equal, Greater, Less, Print, Pop, DefineGlobal, GetGlobal, SetGlobal, GetLocal, SetLocal, JumpIfFalse, Jump, Loop, Call, Closure, GetUpvalue, SetUpvalue, CloseUpvalue };
+pub const Opcode = enum(u8) { Return, Constant, Negate, Add, Subtract, Multiply, Divide, Nil, True, False, Not, Equal, Greater, Less, Print, Pop, DefineGlobal, GetGlobal, SetGlobal, GetLocal, SetLocal, JumpIfFalse, Jump, Loop, Call, Closure, GetUpvalue, SetUpvalue, CloseUpvalue, Class, GetProperty, SetProperty };
 
 pub const Chunk = struct {
     const Self = @This();
@@ -170,7 +170,16 @@ pub const Chunk = struct {
             },
             .CloseUpvalue => {
                 return simple_instruction("OP_CLOSE_UPVALUE", offset);
-            }
+            },
+            .Class => {
+                return simple_instruction("OP_CLASS", offset);
+            },
+            .GetProperty => {
+                return self.constant_instruction("OP_GET_PROPERTY", offset);
+            },
+            .SetProperty => {
+                return self.constant_instruction("OP_SET_PROPERTY", offset);
+            },
         }
 
         return 0;

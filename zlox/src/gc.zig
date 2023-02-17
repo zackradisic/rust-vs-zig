@@ -219,6 +219,15 @@ pub fn blacken_object(self: *GC, obj: *Obj) !void {
                 try self.mark_obj(closure.upvalues[i].widen());
             }
         },
+        .Class => {
+            const class: *Obj.Class = obj.narrow(Obj.Class);
+            try self.mark_obj(class.name.widen());
+        },
+        .Instance => {
+            const instance: *Obj.Instance = obj.narrow(Obj.Instance);
+            try self.mark_obj(instance.class.widen());
+            try self.mark_table(&instance.fields);
+        },
     }
 }
 
@@ -263,6 +272,14 @@ pub fn free_object(self: *GC, obj: *Obj) !void {
         .Upvalue => {
             self.as_allocator().destroy(obj.narrow(Obj.Upvalue));
         },
+        .Class => {
+            self.as_allocator().destroy(obj.narrow(Obj.Class));
+        },
+        .Instance => {
+            const instance = obj.narrow(Obj.Instance);
+            instance.fields.free(self.as_allocator());
+            self.as_allocator().destroy(instance);
+        }
     }
 }
 
