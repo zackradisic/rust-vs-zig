@@ -355,10 +355,8 @@ impl Table {
 
     pub fn mark(&self, greystack: &mut Greystack) {
         for entry in self.iter() {
-            unsafe {
-                Obj::mark(entry.key.cast(), greystack);
-                entry.value.mark(greystack);
-            }
+            Obj::mark(entry.key.cast(), greystack);
+            entry.value.mark(greystack);
         }
     }
 

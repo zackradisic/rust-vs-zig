@@ -21,6 +21,18 @@ use vm::{InterpretError, InterpretResult, ValueStack, STACK_MAX};
 
 use crate::vm::VM;
 
+#[macro_export]
+macro_rules! debug_println {
+    () => {
+        #[cfg(debug_assertions)]
+        $std::print!("\n")
+    };
+    ($($arg:tt)*) => {
+        #[cfg(debug_assertions)]
+        println!($($arg)*);
+    };
+}
+
 fn main() {
     // run_file("./test.lox")
 
@@ -85,6 +97,26 @@ mod test {
         value::Value,
         vm::{InterpretError, ValueStack, STACK_MAX},
     };
+
+    #[test]
+    fn fib() {
+        let src = r#"
+fun fib(x) {
+    if (x <= 1) {
+        return x;
+    }
+    return fib(x - 1) + fib(x - 2);
+}
+
+var result = fib(2);
+"#;
+
+        let mut stack: ValueStack = [MaybeUninit::uninit(); STACK_MAX];
+        let mut vm = interpret(&mut stack, src).unwrap();
+        let result_var_str = vm.get_string("result").as_non_null_ptr();
+        let value = vm.mem.globals.get(result_var_str);
+        assert_eq!(value.unwrap(), Value::Number(1.0));
+    }
 
     #[test]
     fn superclasses() {

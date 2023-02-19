@@ -11,7 +11,7 @@ use crate::{
     native_fn::NativeFnKind,
     obj::{
         Obj, ObjBoundMethod, ObjClass, ObjClosure, ObjFunction, ObjInstance, ObjKind, ObjNative,
-        ObjPunnable, ObjString, ObjUpvalue,
+        ObjPtrWrapper, ObjPunnable, ObjString, ObjUpvalue,
     },
     table::ObjHash,
     value::Value,
@@ -45,11 +45,11 @@ pub struct CallFrame {
 impl CallFrame {
     #[inline]
     fn function(&self) -> &ObjFunction {
-        unsafe { self.closure.as_ref().function.as_ref() }
+        self.closure.as_ref().function.as_ref()
     }
     #[inline]
     fn closure(&self) -> &ObjClosure {
-        unsafe { self.closure.as_ref() }
+        self.closure.as_ref()
     }
 }
 
@@ -109,6 +109,15 @@ impl<'b> VM<'b> {
         this.define_native("clock", NativeFnKind::Clock);
         this.define_native("__dummy", NativeFnKind::Dummy);
 
+        #[cfg(debug_assertions)]
+        {
+            println!("OBJECT LIST!");
+            for obj in &this.mem.obj_list {
+                println!("{:?}", ObjPtrWrapper(obj.as_ptr()));
+            }
+            println!("END OBJECT LIST");
+        }
+
         this
     }
 
@@ -161,8 +170,8 @@ impl<'b> VM<'b> {
                 None => break,
             };
 
-            if unsafe { obj_ptr.as_ref().is_marked } {
-                unsafe { obj_ptr.as_mut().is_marked = false };
+            if obj_ptr.as_ref().is_marked {
+                obj_ptr.as_mut().is_marked = false;
                 i += 1;
                 continue;
             }
@@ -178,7 +187,7 @@ impl<'b> VM<'b> {
         }
 
         for frame in self.iter_frames() {
-            unsafe { Obj::mark(frame.closure.cast::<Obj>().as_ptr(), greystack) }
+            Obj::mark(frame.closure.cast::<Obj>().as_ptr(), greystack)
         }
 
         let mut upvalue = self.open_upvalues;
@@ -190,9 +199,8 @@ impl<'b> VM<'b> {
         }
 
         self.mem.globals.mark(greystack);
-        unsafe {
-            Obj::mark(self.init_string.as_ptr().cast(), greystack);
-        }
+
+        Obj::mark(self.init_string.as_ptr().cast(), greystack);
     }
 
     fn collect_garbage(&mut self) {
@@ -286,6 +294,7 @@ impl<'b> VM<'b> {
     #[inline]
     fn binary_op<F: FnOnce(Value, Value) -> Value>(&mut self, f: F) -> InterpretResult<()> {
         if !matches!(self.peek(0), Value::Number(_)) || !matches!(self.peek(1), Value::Number(_)) {
+            println!("NOOB: {:?} {:?}", self.peek(0), self.peek(1));
             self.runtime_error("Operands must be two numbers or two strings.".into());
             return Err(InterpretError::RuntimeError);
         }
@@ -381,7 +390,7 @@ impl<'b> VM<'b> {
     }
 
     fn call(&mut self, closure: Gc<ObjClosure>, arg_count: u8) -> bool {
-        let arity = unsafe { closure.as_ref().function.as_ref().arity };
+        let arity = closure.as_ref().function.as_ref().arity;
         if arg_count != arity {
             self.runtime_error(format!("Expected {arg_count} arguments but got {arity}.").into());
             return false;
@@ -426,7 +435,7 @@ impl<'b> VM<'b> {
     fn call_value(&mut self, callee: Value, arg_count: u8) -> bool {
         match callee {
             Value::Obj(obj) => {
-                let kind = unsafe { obj.as_ref().kind };
+                let kind = obj.as_ref().kind;
                 match kind {
                     ObjKind::Class => {
                         let class: Gc<ObjClass> = obj.cast();
@@ -466,7 +475,7 @@ impl<'b> VM<'b> {
                     ObjKind::BoundMethod => {
                         let bound: Gc<ObjBoundMethod> = obj.cast();
                         self.stack[self.stack_top as usize - arg_count as usize - 1] =
-                            MaybeUninit::new(unsafe { bound.as_ref() }.receiver);
+                            MaybeUninit::new(bound.as_ref().receiver);
                         return self.call(bound.method, arg_count);
                     }
                     _ => (),
@@ -643,10 +652,13 @@ impl<'b> VM<'b> {
         loop {
             #[cfg(debug_assertions)]
             {
+                // Debug frame window
+                let slot_offset = self.top_call_frame().slots_offset;
+                println!("          Frame slot offset: {}", slot_offset);
                 // Debug stack
-                for slot in self.stack.iter().take(self.stack_top as usize) {
+                for (i, slot) in self.stack.iter().take(self.stack_top as usize).enumerate() {
                     let value: &Value = unsafe { slot.assume_init_ref() };
-                    println!("          [ {value:?} ]");
+                    println!("          {i}: {value:?}");
                 }
 
                 // Debug instruction
@@ -738,7 +750,7 @@ impl<'b> VM<'b> {
                     }
                 }
                 Some(Opcode::SetProperty) => {
-                    let mut top = self.peek(1);
+                    let top = self.peek(1);
                     let mut instance = match top.as_instance_fn() {
                         Some(instance) => instance,
                         None => {
@@ -933,9 +945,8 @@ impl<'b> VM<'b> {
                     let slots_offset = self.top_call_frame().slots_offset;
                     self.close_upvalues(slots_offset);
 
-                    self.call_frame_count -= 1;
-
                     self.stack_top = self.top_call_frame().slots_offset;
+                    self.call_frame_count -= 1;
                     self.push(result);
                 }
                 Some(Opcode::Constant) => {

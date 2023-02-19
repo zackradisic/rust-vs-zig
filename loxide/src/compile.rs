@@ -227,12 +227,12 @@ impl<'src> Compiler<'src> {
 
     #[inline]
     fn current_fn(&self) -> &ObjFunction {
-        unsafe { self.function.as_ref() }
+        self.function.as_ref()
     }
 
     #[inline]
     fn current_fn_mut(&mut self) -> &mut ObjFunction {
-        unsafe { self.function.as_mut() }
+        self.function.as_mut()
     }
 
     /// Add up value and return index in compiler's upvalue array
@@ -781,7 +781,7 @@ impl<'a, 'src: 'a> Parser<'a, 'src> {
         let val = self.make_constant(Value::Obj(func.cast()));
         self.emit_bytes(Opcode::Closure as u8, val);
 
-        let upvalue_count = unsafe { func.as_ref().upvalue_count };
+        let upvalue_count = func.as_ref().upvalue_count;
         let _func_name = unsafe {
             func.as_ref()
                 .name

@@ -14,7 +14,7 @@ pub type Greystack = Vec<NonNull<Obj>>;
 
 // Borrowed from https://github.com/ceronman/loxido/blob/a605c17e4d35bc75022e65387c200201704ec37c/src/gc.rs#L286
 // pub struct GlobalAllocator {
-//     bytes_allocated: AtomicUsize,
+//     bytes_allocated: usize,
 // }
 
 // impl GlobalAllocator {
@@ -41,9 +41,7 @@ pub type Greystack = Vec<NonNull<Obj>>;
 // }
 
 // #[global_allocator]
-// pub static GLOBAL: GlobalAllocator = GlobalAllocator {
-//     bytes_allocated: AtomicUsize::new(0),
-// };
+// pub static GLOBAL: GlobalAllocator = GlobalAllocator { bytes_allocated: 0 };
 
 pub struct Mem {
     pub obj_list: ObjList,
