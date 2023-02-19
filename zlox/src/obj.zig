@@ -17,6 +17,7 @@ pub const Type = enum {
     Upvalue,
     Class,
     Instance,
+    BoundMethod,
 
     pub fn obj_struct(comptime self: Type) type {
         return switch (self) {
@@ -27,6 +28,7 @@ pub const Type = enum {
             Type.Upvalue => Upvalue,
             Type.Class => Class,
             Type.Instance => Instance,
+            Type.BoundMethod => BoundMethod,
         };
     }
 
@@ -43,6 +45,7 @@ pub const Type = enum {
             Upvalue => Type.Upvalue,
             Class => Type.Class,
             Instance => Type.Instance,
+            BoundMethod => Type.BoundMethod,
             else => null,
         };
     }
@@ -75,7 +78,6 @@ pub fn print(self: *Obj, writer: anytype) void {
         },
     }
 }
-
 
 pub const String = struct {
     obj: Obj,
@@ -137,7 +139,7 @@ pub const NativeFunction = struct {
     function: NativeFn,
 
     /// A function pointer
-    pub const NativeFn = *const fn(u8, []Value) Value;
+    pub const NativeFn = *const fn (u8, []Value) Value;
 
     pub fn init(self: *NativeFunction, function: NativeFn) void {
         self.function = function;
@@ -164,26 +166,20 @@ pub const Closure = struct {
         for (upvalues) |*upvalue| {
             upvalue.* = std.mem.zeroes(?*Upvalue);
         }
-        const self: Closure = .{
-            .obj = Obj{
-                .type = Type.Closure,
-                .is_marked = false,
-                .next = null,
-            },
-            .function = function,
-            .upvalues = @ptrCast([*]*Upvalue, upvalues),
-            .upvalues_len = function.upvalue_count,
-        };
 
         var ptr = try gc.alloc_obj(Obj.Closure);
-        ptr.* = self;
+        ptr.function = function;
+        // I don't like casting this, but I don't like giving it [*]?*Upvalue type either.
+        // It would be nice to have upvalue initialization to be done in this function.
+        ptr.upvalues = @ptrCast([*]*Upvalue, upvalues);
+        ptr.upvalues_len = function.upvalue_count;
 
         return ptr;
     }
 
     pub fn print(self: *Closure, writer: anytype) void {
         const name = self.function.name_str();
-        writer.print("<closure> {s}\n", .{ name});
+        writer.print("<closure> {s}\n", .{name});
     }
 
     pub fn widen(self: *Closure) *Obj {
@@ -216,26 +212,19 @@ pub const Upvalue = struct {
 pub const Class = struct {
     obj: Obj,
     name: *String,
+    methods: Table,
 
     pub fn init(gc: *GC, name: *String) !*Class {
-        const self: Class = .{
-            .obj = Obj{
-                .type = Type.Class,
-                .is_marked = false,
-                .next = null,
-            },
-            .name = name,
-        };
-
         var ptr = try gc.alloc_obj(Obj.Class);
-        ptr.* = self;
+        ptr.name = name;
+        ptr.methods = Table.init();
 
         return ptr;
     }
 
     pub fn print(self: *Class, writer: anytype) void {
         writer.print("class {s}", .{self.name.as_string()});
-    }   
+    }
 
     pub fn widen(self: *Class) *Obj {
         return @ptrCast(*Obj, self);
@@ -248,27 +237,40 @@ pub const Instance = struct {
     fields: Table,
 
     pub fn init(gc: *GC, class: *Class) !*Instance {
-        const self: Instance = .{
-            .obj = Obj{
-                .type = Type.Instance,
-                .is_marked = false,
-                .next = null,
-            },
-            .class = class,
-            .fields = Table.init(),
-        };
-
         var ptr = try gc.alloc_obj(Obj.Instance);
-        ptr.* = self;
+        ptr.class = class;
+        ptr.fields = Table.init();
 
         return ptr;
     }
 
     pub fn print(self: *Instance, writer: anytype) void {
         writer.print("{s} instance", .{self.class.name.as_string()});
-    }   
+    }
 
     pub fn widen(self: *Instance) *Obj {
+        return @ptrCast(*Obj, self);
+    }
+};
+
+pub const BoundMethod = struct {
+    obj: Obj,
+    receiver: Value,
+    method: *Closure,
+
+    pub fn init(gc: *GC, receiver: Value, method: *Closure) !*BoundMethod {
+        var ptr = try gc.alloc_obj(Obj.BoundMethod);
+        ptr.receiver = receiver;
+        ptr.method = method;
+
+        return ptr;
+    }
+
+    pub fn print(self: *BoundMethod, writer: anytype) void {
+        self.method.print(writer);
+    }
+
+    pub fn widen(self: *BoundMethod) *Obj {
         return @ptrCast(*Obj, self);
     }
 };

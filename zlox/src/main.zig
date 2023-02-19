@@ -103,7 +103,9 @@ fn interpret_impl(allocator: Allocator, source: []const u8, comptime do_teardown
     var compiler = try Compiler.init(gc, errw, null, &scanner, &parser, FunctionType.Script);
     // note that this may get freed by gc depending on how we choose to implement it later
     const function = try compiler.compile() orelse return InterpretError.CompileError;
+    gc.print_object_list("done compiling");
     const closure = try Obj.Closure.init(gc, function);
+    gc.print_object_list("init closure");
 
     try VM.init(gc, closure);
     gc.patch_allocator();
@@ -115,6 +117,29 @@ fn interpret_impl(allocator: Allocator, source: []const u8, comptime do_teardown
 
     try VM.run();
     return VM;
+}
+
+test "methods" {
+    const source =
+    \\class Scone {
+    \\  topping(first, second) {
+    \\      return "scone with " + first + " and " + second;
+    \\  }
+    \\}
+    \\var scone = Scone();
+    \\var result = scone.topping("berries", "cream");
+    ;
+
+    const vm = try interpret_without_teardown(alloc, source);
+    defer {
+        _ = vm.free() catch {};
+    }
+
+    const result_str = try vm.get_string("result");
+    const expected_str = try vm.get_string("scone with berries and cream");        
+    const value = vm.gc.globals.get(result_str) orelse @panic("result not found");
+
+    try std.testing.expect(Value.eq(value, Value.obj(expected_str.widen())));
 }
 
 test "instance get set" {

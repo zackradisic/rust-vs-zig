@@ -19,6 +19,7 @@ inner_allocator: Allocator,
 /// should mostly be used.
 this_allocator: Allocator,
 
+init_string: *Obj.String,
 obj_list: ?*Obj,
 open_upvalues: ?*Obj.Upvalue = null,
 interned_strings: Table,
@@ -40,6 +41,18 @@ pub fn init(gc: *GC, allocator: Allocator, comptime run_gc: bool) !void {
     gc.gray_stack = try ArrayList(*Obj).initCapacity(allocator, 64);
 
     gc.this_allocator = if (comptime run_gc) Allocator.init(gc, alloc, resize, free) else allocator;
+    gc.init_string = try gc.copy_string(@ptrCast([*] const u8, "init"), "init".len);
+}
+
+pub fn print_object_list(self: *GC, msg: []const u8) void {
+    debug.print("=== Object list {s} ===\n", .{msg});
+    var obj = self.obj_list;
+    while (obj) |o| {
+        o.print(debug);
+        debug.print("\n", .{});
+        obj = o.next;
+    }
+    debug.print("=== end Object list ===\n", .{});
 }
 
 pub inline fn as_allocator(self: *GC) Allocator {
@@ -100,6 +113,22 @@ pub fn collect(self: *GC) !void {
 }
 
 pub fn mark_roots(self: *GC) !void {
+    {
+        var i: usize = 0;
+        if (self.globals.entries_slice()) |entries| {
+            while (i < self.globals.cap) : (i += 1) {
+                if (entries[i].key != null)  {
+                    if (entries[i].val.as_obj()) |obj| {
+                        if (obj.is_marked) {
+                            debug.print("That's unexpected!", .{});
+                            entries[i].val.print(debug);
+                            debug.print("\n", .{});
+                        }
+                    }
+                }
+            }
+        }
+    }
     if (self.stack) |values| {
         var slot = @ptrCast([*]Value, &values.stack[0]);
         while (@ptrToInt(slot) < @ptrToInt(values.top)) : (slot += 1) {
@@ -120,6 +149,7 @@ pub fn mark_roots(self: *GC) !void {
     }
 
     try self.mark_table(&self.globals);
+    try self.mark_obj(self.init_string.widen());
 }
 
 pub fn trace_references(self: *GC) !void {
@@ -221,12 +251,18 @@ pub fn blacken_object(self: *GC, obj: *Obj) !void {
         },
         .Class => {
             const class: *Obj.Class = obj.narrow(Obj.Class);
+            try self.mark_table(&class.methods);
             try self.mark_obj(class.name.widen());
         },
         .Instance => {
             const instance: *Obj.Instance = obj.narrow(Obj.Instance);
             try self.mark_obj(instance.class.widen());
             try self.mark_table(&instance.fields);
+        },
+        .BoundMethod => {
+            const method: *Obj.BoundMethod = obj.narrow(Obj.BoundMethod);
+            try self.mark_value(method.receiver);
+            try self.mark_obj(method.method.widen());
         },
     }
 }
@@ -250,7 +286,11 @@ pub fn free_object(self: *GC, obj: *Obj) !void {
         obj.print(debug);
         debug.print("\n", .{});
     }
+
     switch (obj.type) {
+        .BoundMethod => {
+            self.as_allocator().destroy(obj.narrow(Obj.BoundMethod));
+        },
         .String => {
             const string = obj.narrow(Obj.String);
             self.as_allocator().destroy(string.chars);
@@ -324,7 +364,11 @@ pub fn alloc_string(self: *GC, chars: [*]const u8, len: u32, hash: u32) !*Obj.St
     ptr.len = len;
     ptr.chars = chars;
     ptr.hash = hash;
+    
+    // Adding to interned strings might trigger GC and free newly allocated string.
+    ptr.obj.is_marked = true;
     _ = try self.interned_strings.insert(self.as_allocator(), ptr, Value.nil());
+    ptr.obj.is_marked = false;
     return ptr;
 }
 

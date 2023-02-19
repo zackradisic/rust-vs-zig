@@ -41,7 +41,11 @@ pub const Upvalue = struct {
     is_local: bool,
 };
 
-pub const FunctionType = enum { Function, Script };
+pub const FunctionType = enum { Function, Method, Script, Initializer };
+
+pub const ClassCompiler = struct {
+    enclosing: ?*ClassCompiler,
+};
 
 pub fn Compiler(comptime EW: type) type {
     return struct {
@@ -50,13 +54,14 @@ pub fn Compiler(comptime EW: type) type {
         gc: *GC,
         errw: EW,
         enclosing: ?*Self,
+        class_compiler: ?*ClassCompiler,
         scanner: *Scanner,
         parser: *Parser,
         function: *Obj.Function,
         function_ty: FunctionType,
         local_count: u32,
-        upvalues: [std.math.maxInt(u8)]Upvalue,
         scope_depth: u32,
+        upvalues: [std.math.maxInt(u8)]Upvalue,
         locals: [std.math.maxInt(u8)]Local,
 
         const ParseRule = struct {
@@ -106,7 +111,7 @@ pub fn Compiler(comptime EW: type) type {
             .Print = ParseRule{},
             .Return = ParseRule{},
             .Super = ParseRule{},
-            .This = ParseRule{},
+            .This = ParseRule{ .prefix = Self.this },
             .True = ParseRule{ .prefix = Self.literal },
             .Var = ParseRule{},
             .While = ParseRule{},
@@ -116,11 +121,13 @@ pub fn Compiler(comptime EW: type) type {
 
         pub fn init(gc: *GC, errw: EW, enclosing: ?*Self, scanner: *Scanner, parser: *Parser, function_ty: FunctionType) Allocator.Error!Self {
             var function = try gc.alloc_obj(Obj.Function);
+            const class_compiler = null;
             try function.init(gc.as_allocator());
             var self = Self{
                 .gc = gc,
                 .errw = errw,
                 .enclosing = enclosing,
+                .class_compiler = class_compiler,
                 .scanner = scanner,
                 .parser = parser,
                 .function_ty = function_ty,
@@ -141,6 +148,11 @@ pub fn Compiler(comptime EW: type) type {
             local.name.content = "";
             local.name.len = 0;
             local.is_captured = false;
+
+            if (function_ty != FunctionType.Function) {
+                local.name.content = "this";
+                local.name.len = 4;
+            } 
 
             return self;
         }
@@ -209,7 +221,11 @@ pub fn Compiler(comptime EW: type) type {
         }
 
         fn emit_return(self: *Self) Allocator.Error!void {
-            try self.emit_op(.Nil);
+            if (self.function_ty == FunctionType.Initializer) {
+                try self.emit_bytes(2, &[_]u8{ @enumToInt(Opcode.GetLocal), 0 });
+            } else {
+                try self.emit_op(.Nil);
+            }
             try self.emit_op(.Return);
         }
 
@@ -315,16 +331,42 @@ pub fn Compiler(comptime EW: type) type {
             } 
         }
 
+        fn method(self: *Self) Allocator.Error!void {
+            self.consume(TokenType.Identifier, "Expect method name.");
+            const constant = try self.identifier_constant(&self.parser.previous);
+
+            var ty = FunctionType.Method;
+            if (std.mem.eql(u8, self.parser.previous.content[0..self.parser.previous.len], "init")) {
+                ty = FunctionType.Initializer;
+            }
+            try self.func(ty);
+            try self.emit_bytes(2, &[_]u8{ @enumToInt(Opcode.Method), constant });
+        }
+
         fn class_declaration(self: *Self) Allocator.Error!void {
             self.consume(TokenType.Identifier, "Expect class name.");
+            const class_name = &self.parser.previous;
             const name_constant = try self.identifier_constant(&self.parser.previous);
             self.declare_variable();
 
             try self.emit_bytes(2, &[_]u8{ @enumToInt(Opcode.Class), name_constant });
             try self.define_variable(name_constant);
 
+            var class_compiler = ClassCompiler{
+                .enclosing = self.class_compiler,
+            };
+            self.class_compiler = &class_compiler;
+            defer {
+                self.class_compiler = class_compiler.enclosing;
+            }
+
+            try self.named_variable(class_name, false);
             self.consume(TokenType.LeftBrace, "Expect '{' before class body.");
+            while (!self.check(TokenType.RightBrace) and !self.check(TokenType.Eof)) {
+                try self.method();
+            }
             self.consume(TokenType.RightBrace, "Expect '}' before class body.");
+            try self.emit_op(.Pop);
         }
 
         fn fn_declaration(self: *Self) Allocator.Error!void {
@@ -421,6 +463,10 @@ pub fn Compiler(comptime EW: type) type {
             if (self.match_tok(TokenType.Semicolon)) {
                 try self.emit_return();
             } else {
+                if (self.function_ty == FunctionType.Initializer) {
+                    self.report_error("Cannot return a value from an initializer.");
+                }
+
                 try self.expression();
                 self.consume(TokenType.Semicolon, "Expect ';' after return value.");
                 try self.emit_op(.Return);
@@ -539,6 +585,10 @@ pub fn Compiler(comptime EW: type) type {
             if (can_assign and self.match_tok(TokenType.Equal)) {
                 try self.expression();
                 try self.emit_bytes(2, &[_]u8{ @enumToInt(Opcode.SetProperty), name });
+            } else if (self.match_tok(TokenType.LeftParen)) {
+                const arg_count = try self.argument_list();
+                try self.emit_bytes(2, &[_]u8{ @enumToInt(Opcode.Invoke), name });
+                try self.emit_byte(arg_count);
             } else {
                 try self.emit_bytes(2, &[_]u8{ @enumToInt(Opcode.GetProperty), name });
             }
@@ -785,6 +835,17 @@ pub fn Compiler(comptime EW: type) type {
             } else {
                 try self.emit_bytes(2, &[_]u8{ @enumToInt(get_op), @intCast(u8, arg) });
             }
+        }
+
+        fn this(self: *Self, can_assign: bool) Allocator.Error!void {
+            _ = can_assign;
+
+            if (self.class_compiler == null) {
+                self.report_error("Can't use 'this' outside of a class.");
+                return;
+            }
+
+            try self.variable(false);
         }
 
         fn get_rule(token_type: TokenType) ParseRule {

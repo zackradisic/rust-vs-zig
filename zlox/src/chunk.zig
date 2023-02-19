@@ -7,7 +7,7 @@ const Allocator = mem.Allocator;
 
 const ArrayList = std.ArrayListUnmanaged;
 
-pub const Opcode = enum(u8) { Return, Constant, Negate, Add, Subtract, Multiply, Divide, Nil, True, False, Not, Equal, Greater, Less, Print, Pop, DefineGlobal, GetGlobal, SetGlobal, GetLocal, SetLocal, JumpIfFalse, Jump, Loop, Call, Closure, GetUpvalue, SetUpvalue, CloseUpvalue, Class, GetProperty, SetProperty };
+pub const Opcode = enum(u8) { Return, Constant, Negate, Add, Subtract, Multiply, Divide, Nil, True, False, Not, Equal, Greater, Less, Print, Pop, DefineGlobal, GetGlobal, SetGlobal, GetLocal, SetLocal, JumpIfFalse, Jump, Loop, Call, Closure, GetUpvalue, SetUpvalue, CloseUpvalue, Class, GetProperty, SetProperty, Method, Invoke };
 
 pub const Chunk = struct {
     const Self = @This();
@@ -180,6 +180,12 @@ pub const Chunk = struct {
             .SetProperty => {
                 return self.constant_instruction("OP_SET_PROPERTY", offset);
             },
+            .Method => {
+                return self.constant_instruction("OP_METHOD", offset);
+            },
+            .Invoke => {
+                return self.invoke_instruction("OP_INVOKE", offset);
+            }
         }
 
         return 0;
@@ -207,6 +213,15 @@ pub const Chunk = struct {
     fn jump_instruction(self: *const Chunk, name: [:0]const u8, sign: i32, offset: usize) usize {
         const jump: u16 = (@intCast(u16, self.code.items[offset + 1]) << 8) | self.code.items[offset + 2];
         debug.print("{s} {d} -> {d}\n", .{ name, offset, @intCast(i64, offset) + 3 + sign * jump });
+        return offset + 3;
+    }
+
+
+    fn invoke_instruction(self: *const Chunk, name: [:0]const u8, offset: usize) usize {
+        const constant = self.code.items[offset + 1];
+        const arg_count = self.code.items[offset + 2];
+        debug.print("{s} ({d} args) {d} '", .{ name, arg_count, constant });
+        debug.print("'\n", .{});
         return offset + 3;
     }
 };

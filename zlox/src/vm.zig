@@ -99,7 +99,7 @@ pub fn init(self: *Self, gc: *GC, closure: *Obj.Closure) !void {
     self.call_frames.count = 1;
     self.gc.call_frames = &self.call_frames;
     self.gc.stack = &self.values;
-
+    self.gc.print_object_list("inside init");
 }
 
 pub fn free(self: *Self) !void {
@@ -143,6 +143,17 @@ pub fn run(self: *Self) !void {
         const instruction = @intToEnum(Opcode, frame.read_byte());
 
         switch (instruction) {
+            .Invoke => {
+                const method = frame.read_string();
+                const arg_count = frame.read_byte();
+                if (!(try self.invoke(method, arg_count))) {
+                    return error.RuntimeError;
+                }
+                frame = &self.call_frames.stack[self.call_frames.count - 1];
+            },
+            .Method => {
+                try self.define_method(frame.read_string());
+            },
             .GetProperty => {
                 const instance: *Obj.Instance = self.peek(0).as_obj_narrowed(Obj.Instance) orelse {
                     self.runtime_error("Only instances have properties.");
@@ -153,8 +164,13 @@ pub fn run(self: *Self) !void {
                 if (instance.fields.get(name)) |value| {
                     _ = self.pop();
                     self.push(value);
+                    continue;
                 } else {
                     self.runtime_error_fmt("Undefined property '{s}'.", .{name.as_string()});
+                    return error.RuntimeError;
+                }
+
+                if (!(try self.bind_method(instance.class, name))) {
                     return error.RuntimeError;
                 }
             },
@@ -167,6 +183,7 @@ pub fn run(self: *Self) !void {
                 _ = try instance.fields.insert(self.gc.as_allocator(), frame.read_string(), self.peek(0));
 
                 const val = self.pop();
+                _ = self.pop();
                 self.push(val);
             },
             .Class => {
@@ -323,8 +340,8 @@ pub fn run(self: *Self) !void {
 }
 
 pub fn concatenate(self: *Self) !void {
-    const b = self.pop().Obj.narrow(Obj.String);
-    const a = self.pop().Obj.narrow(Obj.String);
+    const b = self.peek(0).Obj.narrow(Obj.String);
+    const a = self.peek(1).Obj.narrow(Obj.String);
 
     const new_len = a.len + b.len;
     const new_chars = try self.gc.as_allocator().alloc(u8, new_len);
@@ -333,6 +350,10 @@ pub fn concatenate(self: *Self) !void {
     mem.copy(u8, new_chars[a.len..], b.chars[0..b.len]);
 
     const str = try self.gc.take_string(@ptrCast([*]const u8, new_chars), new_len);
+
+    _ = self.pop();
+    _ = self.pop();
+
     self.push(Value.obj(str.widen()));
 }
 
@@ -391,7 +412,6 @@ pub fn close_upvalues(self: *Self, last: [*]Value) void {
         break;
     }
 
-
     var upvalue = open_upvalues;
     debug.print("{d} lmao\n", .{@ptrToInt(upvalue)});
     upvalue.closed = upvalue.location.*;
@@ -400,13 +420,48 @@ pub fn close_upvalues(self: *Self, last: [*]Value) void {
    }
 }
 
+fn define_method(self: *Self, name: *Obj.String) !void {
+    const method = self.peek(0);
+    const class = self.peek(1).as_obj().?.narrow(Obj.Class);
+    _ = try class.methods.insert(self.gc.as_allocator(), name, method);
+    _ = self.pop();
+}
+
+fn bind_method(self: *Self, class: *Obj.Class, name: *Obj.String) !bool {
+    if (class.methods.get(name)) |method| {
+        const bound: *Obj.BoundMethod = try Obj.BoundMethod.init(self.gc, self.peek(0), method.as_obj_narrowed(Obj.Closure).?);
+
+        _ = self.pop();
+        self.push(Value.obj(bound.widen()));
+
+        return true;
+    }
+
+    self.runtime_error_fmt("Undefined property '{s}'.", .{name.chars[0..name.len]});
+    return false;
+}
+
 pub fn call_value(self: *Self, callee: Value, arg_count: u8) !bool {
     if (callee.as_obj()) |obj| {
         switch (obj.type) {
+            .BoundMethod => {
+                const bound: *Obj.BoundMethod = obj.narrow(Obj.BoundMethod);
+                (self.values.top - arg_count - 1)[0] = bound.receiver;
+                return self.call(bound.method, arg_count);
+            },
             .Class => {
                 const class: *Obj.Class = obj.narrow(Obj.Class);
                 const instance = try Obj.Instance.init(self.gc, class);
                 (self.values.top - arg_count - 1)[0] = Value.obj(instance.widen());
+
+                if (class.methods.get(self.gc.init_string)) |initializer| {
+                    const closure = initializer.as_obj_narrowed(Obj.Closure).?;
+                    return self.call(closure, arg_count);
+                } else if (arg_count != 0) {
+                    self.runtime_error_fmt("Expected 0 arguments but got {d}.", .{ arg_count });
+                    return false;
+                }
+
                 return true;
             },
             .Closure => {
@@ -425,6 +480,31 @@ pub fn call_value(self: *Self, callee: Value, arg_count: u8) !bool {
     }
     self.runtime_error("Can only call functions and classes.");
     return false;
+}
+
+pub fn invoke_from_class(self: *Self, class: *Obj.Class, name: *Obj.String, arg_count: u8) bool {
+    const method = class.methods.get(name) orelse {
+        self.runtime_error_fmt("Undefined property '{s}'.\n", .{name.chars[0..name.len]});
+        return false;
+    };
+
+    return self.call(method.as_obj_narrowed(Obj.Closure).?, arg_count);
+}
+
+pub fn invoke(self: *Self, name: *Obj.String, arg_count: u8) !bool {
+    const receiver = self.peek(arg_count);
+
+    const instance: *Obj.Instance = receiver.as_obj_narrowed(Obj.Instance) orelse {
+        self.runtime_error("Only instances have methods.");
+        return false;
+    };
+
+    if (instance.fields.get(name)) |value| {
+        (self.values.top - arg_count - 1)[0] = value;
+        return self.call_value(value, arg_count);
+    }
+
+    return self.invoke_from_class(instance.class, name, arg_count);
 }
 
 pub fn call(self: *Self, closure: *Obj.Closure, arg_count: u8) bool {
