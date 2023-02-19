@@ -100,7 +100,7 @@ fn interpret_impl(allocator: Allocator, source: []const u8, comptime do_teardown
 
     var parser = Compiler.init_parser();
     var scanner = Scanner.init(source);
-    var compiler = try Compiler.init(gc, errw, null, &scanner, &parser, FunctionType.Script);
+    var compiler = try Compiler.init(gc, errw, null, &scanner, &parser, null, FunctionType.Script);
     // note that this may get freed by gc depending on how we choose to implement it later
     const function = try compiler.compile() orelse return InterpretError.CompileError;
     gc.print_object_list("done compiling");
@@ -117,6 +117,137 @@ fn interpret_impl(allocator: Allocator, source: []const u8, comptime do_teardown
 
     try VM.run();
     return VM;
+}
+
+test "invoking fields" {
+    const source = 
+      \\class Oops {
+      \\    init() {
+      \\        fun f() {
+      \\            return 420;
+      \\        }
+      \\
+      \\        this.field = f;
+      \\    }
+      \\}
+      \\
+      \\var oops = Oops();
+      \\var result = oops.field();
+    ;
+
+    const vm = try interpret_without_teardown(alloc, source);
+    defer {
+        _ = vm.free() catch {};
+    }
+
+    const result_str = try vm.get_string("result");
+    const value = vm.gc.globals.get(result_str) orelse @panic("result not found");
+
+    try std.testing.expect(Value.eq(value, Value.number(420)));
+}
+
+test "misusing this" {
+    const source = 
+      \\fun notMethod() {
+      \\    print this;
+      \\}
+      ;
+
+    const vm = interpret(alloc, source) catch |err| {
+        try std.testing.expect(InterpretError.CompileError == err);
+        return;
+    };
+    _ = vm;
+}
+
+test "superclasses" {
+    const source =
+\\class Doughnut {
+\\  cook() {
+\\    print "Dunk in the fryer.";
+\\    this.finish("sprinkles");
+\\  }
+\\
+\\  finish(ingredient) {
+\\    return "Finish with " + ingredient;
+\\  }
+\\}
+\\
+\\class Cruller < Doughnut {
+\\  finish(ingredient) {
+\\    // No sprinkles, always icing.
+\\    return super.finish("icing");
+\\  }
+\\}
+\\
+\\var cruller = Cruller();
+\\var result = cruller.finish("noice");
+;
+
+
+    const vm = try interpret_without_teardown(alloc, source);
+    defer {
+        _ = vm.free() catch {};
+    }
+
+    const expected = try vm.get_string("Finish with icing");
+    const result_str = try vm.get_string("result");
+    const value = vm.gc.globals.get(result_str) orelse @panic("result not found");
+
+    try std.testing.expect(Value.eq(value, Value.obj(expected.widen())));
+
+}
+
+test "nested this" {
+    const source = 
+      \\class nested {
+      \\    method() {
+      \\        fun function() {
+      \\            return this.lol;
+      \\        }
+      \\        return function();
+      \\    }
+      \\}
+      \\
+      \\var nested = nested();
+      \\nested.lol = 420;
+      \\var result = nested.method();
+      ;
+
+    const vm = try interpret_without_teardown(alloc, source);
+    defer {
+        _ = vm.free() catch {};
+    }
+
+    const result_str = try vm.get_string("result");
+    const value = vm.gc.globals.get(result_str) orelse @panic("result not found");
+
+    try std.testing.expect(Value.eq(value, Value.number(420)));
+}
+
+test "this" {
+    const source =
+      \\class Nested {
+      \\    method() {
+      \\      return this.lol;
+      \\    }
+      \\ }
+      \\  
+      \\var nested = Nested();
+      \\nested.lol = 420;
+      \\var result = nested.method();
+      ;
+
+    const vm = try interpret_without_teardown(alloc, source);
+    defer {
+        _ = vm.free() catch {};
+    }
+
+    const result_str = try vm.get_string("result");
+    const value = vm.gc.globals.get(result_str) orelse @panic("result not found");
+
+    try std.testing.expect(Value.eq(value, Value.number(420)));
+
 }
 
 test "methods" {

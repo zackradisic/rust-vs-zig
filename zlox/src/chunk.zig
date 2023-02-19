@@ -7,7 +7,7 @@ const Allocator = mem.Allocator;
 
 const ArrayList = std.ArrayListUnmanaged;
 
-pub const Opcode = enum(u8) { Return, Constant, Negate, Add, Subtract, Multiply, Divide, Nil, True, False, Not, Equal, Greater, Less, Print, Pop, DefineGlobal, GetGlobal, SetGlobal, GetLocal, SetLocal, JumpIfFalse, Jump, Loop, Call, Closure, GetUpvalue, SetUpvalue, CloseUpvalue, Class, GetProperty, SetProperty, Method, Invoke };
+pub const Opcode = enum(u8) { Return, Constant, Negate, Add, Subtract, Multiply, Divide, Nil, True, False, Not, Equal, Greater, Less, Print, Pop, DefineGlobal, GetGlobal, SetGlobal, GetLocal, SetLocal, JumpIfFalse, Jump, Loop, Call, Closure, GetUpvalue, SetUpvalue, CloseUpvalue, Class, GetProperty, SetProperty, Method, Invoke, Inherit, GetSuper, InvokeSuper };
 
 pub const Chunk = struct {
     const Self = @This();
@@ -185,6 +185,15 @@ pub const Chunk = struct {
             },
             .Invoke => {
                 return self.invoke_instruction("OP_INVOKE", offset);
+            },
+            .Inherit => {
+                return simple_instruction("OP_INHERIT", offset);
+            },
+            .GetSuper => {
+                return self.constant_instruction("OP_GET_SUPER", offset);
+            },
+            .InvokeSuper => {
+                return self.invoke_instruction("OP_INVOKE_SUPER", offset);
             }
         }
 

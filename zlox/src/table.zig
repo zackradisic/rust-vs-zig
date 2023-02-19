@@ -64,10 +64,11 @@ pub fn insert(self: *Table, allocator: Allocator, key: *Obj.String, val: Value) 
 }
 
 pub fn add_all(self: *const Table, allocator: Allocator, to: *Table) !void {
-    const entries = self.entries_slice() orelse return;
+    const entries = self.entries_slice_const() orelse return;
     for (entries) |entry| {
-        if (entry.key == null) continue;
-        try to.insert(allocator, entry.key, entry.val);
+        if (entry.key) |key| {
+            _ = try to.insert(allocator, key, entry.val);
+        }
     }
 }
 
@@ -165,6 +166,14 @@ pub fn remove_white(self: *Table) void {
 }
 
 pub fn entries_slice(self: *Table) ?[]Entry {
+    if (self.entries) |entries| {
+        return entries[0..self.cap];
+    }
+
+    return null;
+}
+
+pub fn entries_slice_const(self: *const Table) ?[]Entry {
     if (self.entries) |entries| {
         return entries[0..self.cap];
     }

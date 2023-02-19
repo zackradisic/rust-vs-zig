@@ -85,6 +85,13 @@ pub const Token = struct {
     pub fn debug(self: Token, writer: anytype) void {
         writer.print("Token{{type: {s}, content: \"{s}\"}}", .{ @tagName(self.type), self.content[0..self.len] });
     }
+
+    pub fn synthetic(text: []const u8) Token {
+        var token: Token = undefined;
+        token.content = text.ptr;
+        token.len = @intCast(u32, text.len);
+        return token;
+    }
 };
 
 const Scanner = @This();

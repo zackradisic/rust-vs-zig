@@ -143,6 +143,34 @@ pub fn run(self: *Self) !void {
         const instruction = @intToEnum(Opcode, frame.read_byte());
 
         switch (instruction) {
+            .InvokeSuper => {
+                const method = frame.read_string();
+                const arg_count = frame.read_byte();
+                const superclass = self.pop().as_obj_narrowed(Obj.Class).?;
+                if (!self.invoke_from_class(superclass, method, arg_count)) {
+                    return error.RuntimeError;
+                }
+                frame = &self.call_frames.stack[self.call_frames.count - 1];
+            },
+            .GetSuper => {
+                const name = frame.read_string();
+                const superclass = self.pop().as_obj_narrowed(Obj.Class).?;
+
+                if (!(try self.bind_method(superclass, name))) {
+                    return error.RuntimeError;
+                }
+            },
+            .Inherit => {
+                const superclass: *Obj.Class = self.peek(1).as_obj_narrowed(Obj.Class) orelse {
+                    self.runtime_error("Superclass must be a class.");
+                    return error.RuntimeError;
+                };
+                const subclass: *Obj.Class = self.peek(0).as_obj_narrowed(Obj.Class).?;
+
+                try superclass.methods.add_all(self.gc.as_allocator(), &subclass.methods);
+                // pop the subclass
+                _ = self.pop();
+            },
             .Invoke => {
                 const method = frame.read_string();
                 const arg_count = frame.read_byte();

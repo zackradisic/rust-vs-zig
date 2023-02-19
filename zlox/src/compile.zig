@@ -45,6 +45,7 @@ pub const FunctionType = enum { Function, Method, Script, Initializer };
 
 pub const ClassCompiler = struct {
     enclosing: ?*ClassCompiler,
+    has_superclass: bool = false,
 };
 
 pub fn Compiler(comptime EW: type) type {
@@ -110,7 +111,7 @@ pub fn Compiler(comptime EW: type) type {
             .Or = ParseRule{ .infix = Self.or_, .precedence = Precedence.Or },
             .Print = ParseRule{},
             .Return = ParseRule{},
-            .Super = ParseRule{},
+            .Super = ParseRule{ .prefix = Self.super },
             .This = ParseRule{ .prefix = Self.this },
             .True = ParseRule{ .prefix = Self.literal },
             .Var = ParseRule{},
@@ -119,9 +120,8 @@ pub fn Compiler(comptime EW: type) type {
             .Eof = ParseRule{},
         });
 
-        pub fn init(gc: *GC, errw: EW, enclosing: ?*Self, scanner: *Scanner, parser: *Parser, function_ty: FunctionType) Allocator.Error!Self {
+        pub fn init(gc: *GC, errw: EW, enclosing: ?*Self, scanner: *Scanner, parser: *Parser, class_compiler: ?*ClassCompiler, function_ty: FunctionType) Allocator.Error!Self {
             var function = try gc.alloc_obj(Obj.Function);
-            const class_compiler = null;
             try function.init(gc.as_allocator());
             var self = Self{
                 .gc = gc,
@@ -299,7 +299,7 @@ pub fn Compiler(comptime EW: type) type {
         }
 
         fn func(self: *Self, function_type: FunctionType) Allocator.Error!void {
-            var compiler = try Self.init(self.gc, self.errw, self, self.scanner, self.parser, function_type);
+            var compiler = try Self.init(self.gc, self.errw, self, self.scanner, self.parser, self.class_compiler, function_type);
             compiler.begin_scope();
 
             compiler.consume(.LeftParen, "Expect '(' after function name.");
@@ -345,8 +345,8 @@ pub fn Compiler(comptime EW: type) type {
 
         fn class_declaration(self: *Self) Allocator.Error!void {
             self.consume(TokenType.Identifier, "Expect class name.");
-            const class_name = &self.parser.previous;
-            const name_constant = try self.identifier_constant(&self.parser.previous);
+            var class_name = self.parser.previous;
+            const name_constant = try self.identifier_constant(&class_name);
             self.declare_variable();
 
             try self.emit_bytes(2, &[_]u8{ @enumToInt(Opcode.Class), name_constant });
@@ -357,16 +357,38 @@ pub fn Compiler(comptime EW: type) type {
             };
             self.class_compiler = &class_compiler;
             defer {
+                debug.print("LMAO WE TURNING THIS OFF!", .{});
                 self.class_compiler = class_compiler.enclosing;
             }
 
-            try self.named_variable(class_name, false);
+            if (self.match_tok(.Less)) {
+                self.consume(.Identifier, "Expect superclass name.");
+                try self.variable(false);
+
+                if (identifiers_equal(&class_name, &self.parser.previous)) {
+                    self.report_error("A class cannot inherit from itself.");
+                }
+
+                self.begin_scope();
+                self.add_local(Token.synthetic("super"));
+                try self.define_variable(0);
+
+                try self.named_variable(&class_name, false);
+                try self.emit_op(.Inherit);
+                class_compiler.has_superclass = true;
+            }
+
+            try self.named_variable(&class_name, false);
             self.consume(TokenType.LeftBrace, "Expect '{' before class body.");
             while (!self.check(TokenType.RightBrace) and !self.check(TokenType.Eof)) {
                 try self.method();
             }
             self.consume(TokenType.RightBrace, "Expect '}' before class body.");
             try self.emit_op(.Pop);
+
+            if (class_compiler.has_superclass) {
+                try self.end_scope();
+            }
         }
 
         fn fn_declaration(self: *Self) Allocator.Error!void {
@@ -846,6 +868,37 @@ pub fn Compiler(comptime EW: type) type {
             }
 
             try self.variable(false);
+        }
+
+        fn super(self: *Self, can_assign: bool) Allocator.Error!void {
+            _ = can_assign;
+            if (self.class_compiler) |class_compiler| {
+                if (!class_compiler.has_superclass) {
+                    self.report_error("Can't use 'super' in a class with no superclass.");
+                }
+            } else {
+                self.report_error("Can't use 'super' outside of a class.");
+            }
+
+            self.consume(.Dot, "Expect '.' after 'super'.");
+            self.consume(.Identifier, "Expect superclass method name.");
+            const name = try self.identifier_constant(&self.parser.previous);
+
+            var this_ = Token.synthetic("this");
+            var super_ = Token.synthetic("super");
+
+            try self.named_variable(&this_, false);
+
+            if (self.match_tok(.LeftParen)) {
+                const arg_count = try self.argument_list();
+                try self.named_variable(&super_, false);
+                try self.emit_bytes(2, &[_]u8{ @enumToInt(Opcode.InvokeSuper), name });
+                try self.emit_byte(arg_count);
+            } else {
+                try self.named_variable(&super_, false);
+                try self.emit_bytes(2, &[_]u8{ @enumToInt(Opcode.GetSuper), name });
+            }
+
         }
 
         fn get_rule(token_type: TokenType) ParseRule {
