@@ -357,7 +357,6 @@ pub fn Compiler(comptime EW: type) type {
             };
             self.class_compiler = &class_compiler;
             defer {
-                debug.print("LMAO WE TURNING THIS OFF!", .{});
                 self.class_compiler = class_compiler.enclosing;
             }
 
