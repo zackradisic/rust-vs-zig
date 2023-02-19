@@ -99,7 +99,6 @@ pub fn init(self: *Self, gc: *GC, closure: *Obj.Closure) !void {
     self.call_frames.count = 1;
     self.gc.call_frames = &self.call_frames;
     self.gc.stack = &self.values;
-    self.gc.print_object_list("inside init");
 }
 
 pub fn free(self: *Self) !void {
@@ -239,7 +238,7 @@ pub fn run(self: *Self) !void {
                 var closure = try Obj.Closure.init(self.gc, function);
                 self.push(Value.obj(closure.widen()));
                 var i: usize = 0;
-                while (i < closure.upvalues_len): (i += 1) {
+                while (i < closure.upvalues_len) : (i += 1) {
                     const is_local = frame.read_byte() == 1;
                     const index = frame.read_byte();
                     if (is_local) {
@@ -411,8 +410,8 @@ pub fn binary_op(self: *Self, comptime op: Opcode) void {
 pub fn capture_upvalue(self: *Self, local: *Value) !*Obj.Upvalue {
     var prev_upvalue: ?*Obj.Upvalue = null;
     var upvalue = self.gc.open_upvalues;
-    
-    while (upvalue != null and @ptrToInt(upvalue.?.location) > @ptrToInt(local))  {
+
+    while (upvalue != null and @ptrToInt(upvalue.?.location) > @ptrToInt(local)) {
         prev_upvalue = upvalue;
         upvalue = upvalue.?.next;
     }
@@ -435,17 +434,17 @@ pub fn capture_upvalue(self: *Self, local: *Value) !*Obj.Upvalue {
 }
 
 pub fn close_upvalues(self: *Self, last: [*]Value) void {
-   while (self.gc.open_upvalues) |open_upvalues| {
-    if (!(@ptrToInt(open_upvalues) >= @ptrToInt(last))) {
-        break;
-    }
+    while (self.gc.open_upvalues) |open_upvalues| {
+        if (!(@ptrToInt(open_upvalues) >= @ptrToInt(last))) {
+            break;
+        }
 
-    var upvalue = open_upvalues;
-    debug.print("{d} lmao\n", .{@ptrToInt(upvalue)});
-    upvalue.closed = upvalue.location.*;
-    upvalue.location = &upvalue.closed;
-    self.gc.open_upvalues = upvalue.next;
-   }
+        var upvalue = open_upvalues;
+        debug.print("{d} lmao\n", .{@ptrToInt(upvalue)});
+        upvalue.closed = upvalue.location.*;
+        upvalue.location = &upvalue.closed;
+        self.gc.open_upvalues = upvalue.next;
+    }
 }
 
 fn define_method(self: *Self, name: *Obj.String) !void {
@@ -486,7 +485,7 @@ pub fn call_value(self: *Self, callee: Value, arg_count: u8) !bool {
                     const closure = initializer.as_obj_narrowed(Obj.Closure).?;
                     return self.call(closure, arg_count);
                 } else if (arg_count != 0) {
-                    self.runtime_error_fmt("Expected 0 arguments but got {d}.", .{ arg_count });
+                    self.runtime_error_fmt("Expected 0 arguments but got {d}.", .{arg_count});
                     return false;
                 }
 
@@ -503,7 +502,7 @@ pub fn call_value(self: *Self, callee: Value, arg_count: u8) !bool {
                 self.push(result);
                 return true;
             },
-            else => {}, 
+            else => {},
         }
     }
     self.runtime_error("Can only call functions and classes.");

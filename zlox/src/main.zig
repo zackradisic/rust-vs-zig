@@ -28,7 +28,6 @@ const Compiler = CompilerType(std.fs.File.Writer);
 const errw = io.getStdErr().writer();
 
 pub fn main() !void {
-    debug.print("Token size: {d}\n", .{@sizeOf(Scanner.Token)});
     // First we specify what parameters our program can take.
     // We can use `parseParamsComptime` to parse a string into an array of `Param(Help)`
     const params = comptime clap.parseParamsComptime(
@@ -103,9 +102,7 @@ fn interpret_impl(allocator: Allocator, source: []const u8, comptime do_teardown
     var compiler = try Compiler.init(gc, errw, null, &scanner, &parser, null, FunctionType.Script);
     // note that this may get freed by gc depending on how we choose to implement it later
     const function = try compiler.compile() orelse return InterpretError.CompileError;
-    gc.print_object_list("done compiling");
     const closure = try Obj.Closure.init(gc, function);
-    gc.print_object_list("init closure");
 
     try VM.init(gc, closure);
     gc.patch_allocator();
@@ -119,20 +116,43 @@ fn interpret_impl(allocator: Allocator, source: []const u8, comptime do_teardown
     return VM;
 }
 
+test "fib" {
+    const source =
+        \\ fun fib(x) {
+        \\     if (x <= 1) {
+        \\         return x;
+        \\     }
+        \\     return fib(x - 1) + fib(x - 2);
+        \\ }
+        \\
+        \\ var result = fib(2);
+    ;
+
+    const vm = try interpret_without_teardown(alloc, source);
+    defer {
+        _ = vm.free() catch {};
+    }
+
+    const result_str = try vm.get_string("result");
+    const value = vm.gc.globals.get(result_str) orelse @panic("result not found");
+
+    try std.testing.expect(Value.eq(value, Value.number(1)));
+}
+
 test "invoking fields" {
-    const source = 
-      \\class Oops {
-      \\    init() {
-      \\        fun f() {
-      \\            return 420;
-      \\        }
-      \\
-      \\        this.field = f;
-      \\    }
-      \\}
-      \\
-      \\var oops = Oops();
-      \\var result = oops.field();
+    const source =
+        \\class Oops {
+        \\    init() {
+        \\        fun f() {
+        \\            return 420;
+        \\        }
+        \\
+        \\        this.field = f;
+        \\    }
+        \\}
+        \\
+        \\var oops = Oops();
+        \\var result = oops.field();
     ;
 
     const vm = try interpret_without_teardown(alloc, source);
@@ -147,11 +167,11 @@ test "invoking fields" {
 }
 
 test "misusing this" {
-    const source = 
-      \\fun notMethod() {
-      \\    print this;
-      \\}
-      ;
+    const source =
+        \\fun notMethod() {
+        \\    print this;
+        \\}
+    ;
 
     const vm = interpret(alloc, source) catch |err| {
         try std.testing.expect(InterpretError.CompileError == err);
@@ -162,28 +182,27 @@ test "misusing this" {
 
 test "superclasses" {
     const source =
-\\class Doughnut {
-\\  cook() {
-\\    print "Dunk in the fryer.";
-\\    this.finish("sprinkles");
-\\  }
-\\
-\\  finish(ingredient) {
-\\    return "Finish with " + ingredient;
-\\  }
-\\}
-\\
-\\class Cruller < Doughnut {
-\\  finish(ingredient) {
-\\    // No sprinkles, always icing.
-\\    return super.finish("icing");
-\\  }
-\\}
-\\
-\\var cruller = Cruller();
-\\var result = cruller.finish("noice");
-;
-
+        \\class Doughnut {
+        \\  cook() {
+        \\    print "Dunk in the fryer.";
+        \\    this.finish("sprinkles");
+        \\  }
+        \\
+        \\  finish(ingredient) {
+        \\    return "Finish with " + ingredient;
+        \\  }
+        \\}
+        \\
+        \\class Cruller < Doughnut {
+        \\  finish(ingredient) {
+        \\    // No sprinkles, always icing.
+        \\    return super.finish("icing");
+        \\  }
+        \\}
+        \\
+        \\var cruller = Cruller();
+        \\var result = cruller.finish("noice");
+    ;
 
     const vm = try interpret_without_teardown(alloc, source);
     defer {
@@ -195,24 +214,23 @@ test "superclasses" {
     const value = vm.gc.globals.get(result_str) orelse @panic("result not found");
 
     try std.testing.expect(Value.eq(value, Value.obj(expected.widen())));
-
 }
 
 test "nested this" {
-    const source = 
-      \\class nested {
-      \\    method() {
-      \\        fun function() {
-      \\            return this.lol;
-      \\        }
-      \\        return function();
-      \\    }
-      \\}
-      \\
-      \\var nested = nested();
-      \\nested.lol = 420;
-      \\var result = nested.method();
-      ;
+    const source =
+        \\class nested {
+        \\    method() {
+        \\        fun function() {
+        \\            return this.lol;
+        \\        }
+        \\        return function();
+        \\    }
+        \\}
+        \\
+        \\var nested = nested();
+        \\nested.lol = 420;
+        \\var result = nested.method();
+    ;
 
     const vm = try interpret_without_teardown(alloc, source);
     defer {
@@ -227,16 +245,16 @@ test "nested this" {
 
 test "this" {
     const source =
-      \\class Nested {
-      \\    method() {
-      \\      return this.lol;
-      \\    }
-      \\ }
-      \\  
-      \\var nested = Nested();
-      \\nested.lol = 420;
-      \\var result = nested.method();
-      ;
+        \\class Nested {
+        \\    method() {
+        \\      return this.lol;
+        \\    }
+        \\ }
+        \\
+        \\var nested = Nested();
+        \\nested.lol = 420;
+        \\var result = nested.method();
+    ;
 
     const vm = try interpret_without_teardown(alloc, source);
     defer {
@@ -247,18 +265,17 @@ test "this" {
     const value = vm.gc.globals.get(result_str) orelse @panic("result not found");
 
     try std.testing.expect(Value.eq(value, Value.number(420)));
-
 }
 
 test "methods" {
     const source =
-    \\class Scone {
-    \\  topping(first, second) {
-    \\      return "scone with " + first + " and " + second;
-    \\  }
-    \\}
-    \\var scone = Scone();
-    \\var result = scone.topping("berries", "cream");
+        \\class Scone {
+        \\  topping(first, second) {
+        \\      return "scone with " + first + " and " + second;
+        \\  }
+        \\}
+        \\var scone = Scone();
+        \\var result = scone.topping("berries", "cream");
     ;
 
     const vm = try interpret_without_teardown(alloc, source);
@@ -267,7 +284,7 @@ test "methods" {
     }
 
     const result_str = try vm.get_string("result");
-    const expected_str = try vm.get_string("scone with berries and cream");        
+    const expected_str = try vm.get_string("scone with berries and cream");
     const value = vm.gc.globals.get(result_str) orelse @panic("result not found");
 
     try std.testing.expect(Value.eq(value, Value.obj(expected_str.widen())));
@@ -275,43 +292,43 @@ test "methods" {
 
 test "instance get set" {
     const source =
-  \\class Pair {}
-  \\
-  \\var pair = Pair();
-  \\pair.first = 1;
-  \\pair.second = 2;
-  \\var result = pair.first + pair.second;  
-  ;
+        \\class Pair {}
+        \\
+        \\var pair = Pair();
+        \\pair.first = 1;
+        \\pair.second = 2;
+        \\var result = pair.first + pair.second;
+    ;
 
-  const vm = try interpret_without_teardown(alloc, source);
-  defer {
-    _ = vm.free() catch {};
-  }
+    const vm = try interpret_without_teardown(alloc, source);
+    defer {
+        _ = vm.free() catch {};
+    }
 
-  const result_str = try vm.get_string("result");
-  const value = vm.gc.globals.get(result_str) orelse @panic("result not found");
+    const result_str = try vm.get_string("result");
+    const value = vm.gc.globals.get(result_str) orelse @panic("result not found");
 
-  value.print(debug);
-  try std.testing.expect(Value.eq(value, Value.number(3)));
+    value.print(debug);
+    try std.testing.expect(Value.eq(value, Value.number(3)));
 }
 
 test "upvalue closed" {
-    const source = 
-  \\fun makeClosure() {
-  \\  var a = 1;
-  \\  fun f() {
-  \\    a = a + 1;
-  \\    return a;
-  \\  }
-  \\  return f;
-  \\}
-  \\
-  \\var closure = makeClosure();
-  \\var first = closure();
-  \\var anotherClosure = makeClosure();
-  \\var second = anotherClosure();
-  \\var third = closure();
-  ;
+    const source =
+        \\fun makeClosure() {
+        \\  var a = 1;
+        \\  fun f() {
+        \\    a = a + 1;
+        \\    return a;
+        \\  }
+        \\  return f;
+        \\}
+        \\
+        \\var closure = makeClosure();
+        \\var first = closure();
+        \\var anotherClosure = makeClosure();
+        \\var second = anotherClosure();
+        \\var third = closure();
+    ;
     const vm = try interpret_without_teardown(alloc, source);
     defer {
         _ = vm.free() catch {};
@@ -330,16 +347,16 @@ test "upvalue closed" {
 }
 
 test "set immediate upvalue" {
-    const source = 
-      \\fun outer() {
-      \\  var x = 420;
-      \\  fun inner() {
-      \\    x = x + 1;
-      \\    return x;
-      \\   }
-      \\ return inner();
-      \\}
-      \\var value = outer();
+    const source =
+        \\fun outer() {
+        \\  var x = 420;
+        \\  fun inner() {
+        \\    x = x + 1;
+        \\    return x;
+        \\   }
+        \\ return inner();
+        \\}
+        \\var value = outer();
     ;
     const vm = try interpret_without_teardown(alloc, source);
     defer {
@@ -352,16 +369,16 @@ test "set immediate upvalue" {
 
 test "immediate upvalue" {
     const source =
-      \\var result = "nothing";
-      \\fun outer() {
-      \\  var x = 420;
-      \\  fun inner() {
-      \\    result = x;
-      \\  }
-      \\  inner();
-      \\}
-      \\outer();
-      ;
+        \\var result = "nothing";
+        \\fun outer() {
+        \\  var x = 420;
+        \\  fun inner() {
+        \\    result = x;
+        \\  }
+        \\  inner();
+        \\}
+        \\outer();
+    ;
     const vm = try interpret_without_teardown(alloc, source);
     defer {
         _ = vm.free() catch {};
@@ -372,9 +389,9 @@ test "immediate upvalue" {
 }
 
 test "call native fn" {
-    const source = 
-      \\var num = __dummy();
-      ;
+    const source =
+        \\var num = __dummy();
+    ;
     const vm = try interpret_without_teardown(alloc, source);
     defer {
         _ = vm.free() catch {};
@@ -385,19 +402,19 @@ test "call native fn" {
 }
 
 test "call fn" {
-    const source = 
-      \\fun add420(num) {
-      \\    return num + 420;
-      \\}
-      \\   
-      \\fun add69(num) {
-      \\    return num + 69;
-      \\}
-      \\  
-      \\var num = add420(1);
-      \\num = add69(num);
-      \\num = add420(num);
-      ;
+    const source =
+        \\fun add420(num) {
+        \\    return num + 420;
+        \\}
+        \\
+        \\fun add69(num) {
+        \\    return num + 69;
+        \\}
+        \\
+        \\var num = add420(1);
+        \\num = add69(num);
+        \\num = add420(num);
+    ;
     const vm = try interpret_without_teardown(alloc, source);
     defer {
         _ = vm.free() catch {};
