@@ -85,7 +85,7 @@ pub fn delete(self: *Table, key: *Obj.String) bool {
 pub fn find_string(self: *Table, chars: [*]const u8, len: u32, hash: u32) ?*Obj.String {
     if (self.count == 0) return null;
     const entries = self.entries_slice() orelse return null;
-    var idx = hash % self.cap;
+    var idx = hash & (self.cap - 1);
 
     var entry: *Entry = undefined;
     while (true) {
@@ -96,7 +96,7 @@ pub fn find_string(self: *Table, chars: [*]const u8, len: u32, hash: u32) ?*Obj.
             return null;
         }
 
-        idx = (idx + 1) % self.cap;
+        idx = (idx + 1) & (self.cap - 1);
     }
 }
 
@@ -107,7 +107,7 @@ fn find_entry(self: *Table, key: *Obj.String) ?*Entry {
 
 fn find_entry_impl(entries: []Entry, key: *Obj.String) *Entry {
     const cap = entries.len;
-    var idx = key.hash % cap;
+    var idx = key.hash & (cap - 1);
     var tombstone: ?*Entry = null;
     while (true) {
         const entry = &entries[idx];
@@ -126,7 +126,7 @@ fn find_entry_impl(entries: []Entry, key: *Obj.String) *Entry {
             return entry;
         }
 
-        idx = (idx + 1) % cap;
+        idx = (idx + 1) & (cap - 1);
     }
 }
 
