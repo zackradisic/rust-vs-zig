@@ -229,8 +229,9 @@ pub const Chunk = struct {
     fn invoke_instruction(self: *const Chunk, name: [:0]const u8, offset: usize) usize {
         const constant = self.code.items[offset + 1];
         const arg_count = self.code.items[offset + 2];
-        debug.print("{s} ({d} args) {d} '", .{ name, arg_count, constant });
-        debug.print("'\n", .{});
+        debug.print("{s} ({d} args) {d} ", .{ name, arg_count, constant });
+        // self.constants.items[constant].print(debug);
+        debug.print("\n", .{});
         return offset + 3;
     }
 };

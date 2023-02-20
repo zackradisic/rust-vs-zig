@@ -11,6 +11,7 @@ const Obj = @import("obj.zig");
 const GC = @import("gc.zig");
 const Table = @import("table.zig");
 const native_fns = @import("native_fns.zig");
+// const ztracy = @import("ztracy");
 
 const CallFrame = struct {
     closure: *Obj.Closure,
@@ -106,6 +107,8 @@ pub fn free(self: *Self) !void {
 }
 
 pub fn run(self: *Self) !void {
+    // const tracy_zone = ztracy.ZoneNC(@src(), "Run", 0x00_ff_00_00);
+    // defer tracy_zone.End();
     var frame: *CallFrame = &self.call_frames.stack[self.call_frames.count - 1];
     while (true) {
         if (comptime Conf.TRACING) blk: {
@@ -140,6 +143,11 @@ pub fn run(self: *Self) !void {
         }
 
         const instruction = @intToEnum(Opcode, frame.read_byte());
+        // const tracy_zone_op = ztracy.ZoneNC(@src(), try std.fmt.bufPrintZ(&buf, "{s}:{d}", .{@tagName(instruction), incr}), 0x00_ff_00_00);
+        // defer { 
+        //     buf[0] = 0;
+        //     tracy_zone_op.End(); 
+        // }
 
         switch (instruction) {
             .InvokeSuper => {
@@ -225,7 +233,6 @@ pub fn run(self: *Self) !void {
             .GetUpvalue => {
                 const slot = frame.read_byte();
                 const val: Value = frame.closure.upvalues[slot].location.*;
-                val.print(debug);
                 self.push(val);
             },
             .SetUpvalue => {
@@ -280,7 +287,6 @@ pub fn run(self: *Self) !void {
             .SetGlobal => {
                 const name = frame.read_string();
                 const val = self.peek(0);
-                val.print(debug);
                 if (try self.gc.globals.insert(self.gc.as_allocator(), name, val)) {
                     _ = self.gc.globals.delete(name);
                     self.runtime_error_fmt("redefinition of global variable '{}'", .{name});

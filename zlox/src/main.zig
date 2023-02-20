@@ -34,8 +34,6 @@ const Compiler = CompilerType(std.fs.File.Writer);
 const errw = io.getStdErr().writer();
 
 pub fn main() !void {
-    // First we specify what parameters our program can take.
-    // We can use `parseParamsComptime` to parse a string into an array of `Param(Help)`
     const params = comptime clap.parseParamsComptime(
         \\-h, --help             Display this help and exit.
         \\-r, --repl             Start a REPL..
@@ -69,6 +67,12 @@ pub fn main() !void {
 
     const file = res.positionals[0];
     try run_file(alloc, file);
+
+    // var args = std.process.args();
+    // while (args.next()) |arg| {
+    //     debug.print("ARG: {s}\n", .{arg});
+    // }
+    // try run_file(alloc, "/Users/zackradisic/Code/lox-vms/zlox/test.lox");
 }
 
 pub fn repl(
@@ -119,6 +123,7 @@ fn interpret_impl(allocator: Allocator, source: []const u8, comptime do_teardown
     }
 
     try VM.run();
+
     return VM;
 }
 

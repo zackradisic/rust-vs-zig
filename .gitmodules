@@ -1,3 +1,6 @@
 [submodule "zlox/libs/zig-clap"]
 	path = zlox/libs/zig-clap
 	url = https://github.com/Hejsil/zig-clap
+[submodule "zlox/libs/ztracy"]
+	path = zlox/libs/ztracy
+	url = https://github.com/michal-z/zig-gamedev

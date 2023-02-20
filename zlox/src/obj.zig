@@ -55,14 +55,14 @@ type: Type,
 is_marked: bool,
 next: ?*Obj = null,
 
-pub fn narrow(self: *Obj, comptime ParentType: type) *ParentType {
+pub inline fn narrow(self: *Obj, comptime ParentType: type) *ParentType {
     if (comptime Conf.SAFE_OBJ_CAST) {
         return self.safe_narrow(ParentType) orelse @panic("invalid cast");
     }
     return @fieldParentPtr(ParentType, "obj", self);
 }
 
-pub fn safe_narrow(self: *Obj, comptime ParentType: type) ?*ParentType {
+pub inline fn safe_narrow(self: *Obj, comptime ParentType: type) ?*ParentType {
     if (self.type != Type.from_obj(ParentType)) return null;
     return narrow(self, ParentType);
 }

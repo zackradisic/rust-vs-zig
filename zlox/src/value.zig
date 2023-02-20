@@ -60,7 +60,7 @@ pub const Value = union(Type) {
         }
     }
 
-    pub fn as_nil(self: Value) ?void {
+    pub inline fn as_nil(self: Value) ?void {
         switch (self) {
             .Nil => return,
             else => return null,
@@ -74,14 +74,14 @@ pub const Value = union(Type) {
         }
     }
 
-    pub fn as_obj(self: Value) ?*Obj {
+    pub inline fn as_obj(self: Value) ?*Obj {
         switch (self) {
             .Obj => |val| return val,
             else => return null,
         }
     }
 
-    pub fn as_obj_narrowed(self: Value, comptime ParentType: type) ?*ParentType {
+    pub inline fn as_obj_narrowed(self: Value, comptime ParentType: type) ?*ParentType {
         if (self.as_obj()) |object| {
             return object.safe_narrow(ParentType);
         } 

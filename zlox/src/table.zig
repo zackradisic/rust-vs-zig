@@ -165,7 +165,7 @@ pub fn remove_white(self: *Table) void {
     }
 }
 
-pub fn entries_slice(self: *Table) ?[]Entry {
+pub inline fn entries_slice(self: *Table) ?[]Entry {
     if (self.entries) |entries| {
         return entries[0..self.cap];
     }
