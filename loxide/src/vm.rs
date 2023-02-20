@@ -909,6 +909,12 @@ impl<'b> VM<'b> {
                 Some(Opcode::Nil) => {
                     self.push(Value::Nil);
                 }
+                Some(Opcode::True) => {
+                    self.push(Value::Bool(true));
+                }
+                Some(Opcode::False) => {
+                    self.push(Value::Bool(false));
+                }
                 Some(Opcode::Pop) => {
                     self.pop();
                 }

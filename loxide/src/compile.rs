@@ -1491,9 +1491,9 @@ impl<'src> Scanner<'src> {
             b'*' => return self.make_token(TokenKind::Star),
             b'!' => {
                 let kind = if self.matches(b'=') {
-                    TokenKind::LessEqual
+                    TokenKind::BangEqual
                 } else {
-                    TokenKind::Less
+                    TokenKind::Bang
                 };
                 return self.make_token(kind);
             }
@@ -1559,7 +1559,7 @@ impl<'src> Scanner<'src> {
             b's' => self.check_keyword(1, 4, "uper", TokenKind::Super),
             b't' if self.current as i64 - self.start as i64 > 1 => match self.src[self.start + 1] {
                 b'h' => self.check_keyword(2, 2, "is", TokenKind::This),
-                b'r' => self.check_keyword(2, 2, "rue", TokenKind::True),
+                b'r' => self.check_keyword(2, 2, "ue", TokenKind::True),
                 _ => TokenKind::Identifier,
             },
             b'v' => self.check_keyword(1, 2, "ar", TokenKind::Var),

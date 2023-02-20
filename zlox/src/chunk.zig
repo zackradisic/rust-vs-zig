@@ -35,7 +35,7 @@ pub const Chunk = struct {
 
     pub fn write_u16(self: *Chunk, allocator: Allocator, val: u16, line: u16) !void {
         try self.write_byte(allocator, @intCast(u8, val >> 8), line);
-        try self.write_byte(allocator, @intCast(u8, val), line);
+        try self.write_byte(allocator, @truncate(u8, val), line);
     }
 
     pub fn free(self: *Chunk, allocator: Allocator) void {
@@ -47,7 +47,7 @@ pub const Chunk = struct {
     pub fn add_constant(self: *Chunk, allocator: Allocator, value: Value) !u8 {
         const index = self.constants.items.len;
         try self.constants.append(allocator, value);
-        return @intCast(u8, index);
+        return @truncate(u8, index);
     }
 
     pub fn disassemble(self: *const Chunk, name: []const u8) void {
