@@ -37,10 +37,13 @@ pub fn build(b: *std.build.Builder) void {
     // Standard release options allow the person running `zig build` to select
     // between Debug, ReleaseSafe, ReleaseFast, and ReleaseSmall.
     var mode = b.standardReleaseOptions();
+    _ = mode;
 
     // const lib = b.addStaticLibrary("zlox", "src/main.zig");
     // lib.setBuildMode(mode);
     // lib.install();
+
+    std.debug.print("Is release? {?}\n", .{b.is_release});
 
     var opt = b.addOptions();
     const opts = BuildOptions.from_builder(b);
@@ -51,19 +54,34 @@ pub fn build(b: *std.build.Builder) void {
     opt.addOption(@TypeOf(opts.debug_log_gc), "DEBUG_LOG_GC", opts.debug_log_gc);
     opt.addOption(@TypeOf(opts.gc_heap_grow_factor), "GC_HEAP_GROW_FACTOR", opts.gc_heap_grow_factor);
 
-    const bin = b.addExecutable("main", "src/main.zig");
+    const bin = b.addExecutable("zlox", "src/main.zig");
     bin.addPackagePath("clap", "libs/zig-clap/clap.zig");
     bin.addOptions("build_options", opt);
-    bin.setBuildMode(mode);
+    bin.setBuildMode(.Debug);
+
+    bin.dll_export_fns = true;
+    bin.verbose_link = true;
+    bin.strip = false;
+    bin.export_table = true;
+    bin.dead_strip_dylibs = false;
+    bin.bundle_compiler_rt = true;
+    bin.use_llvm = false;
+
     bin.install();
 
-    const test_filter = b.option([]const u8, "test-filter", "Skip tests that do not match filter");
-    const main_tests = b.addTestExe("test", "src/main.zig");
-    main_tests.setBuildMode(mode);
-    main_tests.addOptions("build_options", opt);
-    main_tests.setFilter(test_filter);
-    main_tests.install();
+    const run_cmd = bin.run();
+    run_cmd.step.dependOn(b.getInstallStep());
 
-    const test_step = b.step("test", "Run library tests");
-    test_step.dependOn(&main_tests.step);
+    const run_step = b.step("run", "Run the app");
+    run_step.dependOn(&run_cmd.step);
+
+    // const test_filter = b.option([]const u8, "test-filter", "Skip tests that do not match filter");
+    // const main_tests = b.addTestExe("test", "src/main.zig");
+    // main_tests.setBuildMode(mode);
+    // main_tests.addOptions("build_options", opt);
+    // main_tests.setFilter(test_filter);
+    // main_tests.install();
+
+    // const test_step = b.step("test", "Run library tests");
+    // test_step.dependOn(&main_tests.step);
 }

@@ -18,11 +18,17 @@ const Scanner = @import("scanner.zig");
 const GC = @import("gc.zig");
 const Value = @import("value.zig").Value;
 const Obj = @import("obj.zig");
+const Conf = @import("conf.zig");
 
-var general_purpose_allocator = std.heap.GeneralPurposeAllocator(.{
-    .retain_metadata = true,
-}){};
-const alloc = general_purpose_allocator.allocator();
+// const alloc = if (Conf.DEBUG_LOG_GC) blk: {
+//     var general_purpose_allocator = std.heap.GeneralPurposeAllocator(.{
+//         .retain_metadata = true,
+//     }){};
+//     break :blk general_purpose_allocator.allocator();
+// } else blk: {
+//     break :blk std.heap.c_allocator;
+// };
+const alloc = std.heap.c_allocator;
 
 const Compiler = CompilerType(std.fs.File.Writer);
 const errw = io.getStdErr().writer();
@@ -32,7 +38,7 @@ pub fn main() !void {
     // We can use `parseParamsComptime` to parse a string into an array of `Param(Help)`
     const params = comptime clap.parseParamsComptime(
         \\-h, --help             Display this help and exit.
-        \\-r, --repl             Start a REPL.
+        \\-r, --repl             Start a REPL..
         \\<FILE>...
         \\
     );

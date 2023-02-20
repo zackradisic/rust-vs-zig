@@ -5,7 +5,7 @@
       "type": "lldb",
       "request": "launch",
       "name": "debug",
-      "program": "./zig-out/bin/main",
+      "program": "./zig-out/bin/zlox",
       "args": ["test.lox"],
       "env": {},
       "console": "internalConsole"
