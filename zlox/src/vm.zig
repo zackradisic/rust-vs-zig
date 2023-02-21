@@ -446,7 +446,6 @@ pub fn close_upvalues(self: *Self, last: [*]Value) void {
         }
 
         var upvalue = open_upvalues;
-        debug.print("{d} lmao\n", .{@ptrToInt(upvalue)});
         upvalue.closed = upvalue.location.*;
         upvalue.location = &upvalue.closed;
         self.gc.open_upvalues = upvalue.next;
