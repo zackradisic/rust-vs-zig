@@ -1,7 +1,8 @@
 use std::{
     alloc::{self, handle_alloc_error, Layout},
     borrow::Cow,
-    mem::MaybeUninit,
+    mem::{transmute, MaybeUninit},
+    num::NonZeroUsize,
     ptr::{self, addr_of_mut, null_mut, NonNull},
 };
 
@@ -34,10 +35,8 @@ pub struct CallFrame {
     /// and resume from there
     pub instr_offset: u32,
 
-    /// PERF: pointer is faster to dereference than index
-    ///
-    /// index into VM's value stack at the first slot this function can use
-    pub slots_offset: u32,
+    /// ptr into VM's value stack at the first slot this function can use
+    pub slots_ptr: *mut Value,
 
     pub closure: Gc<ObjClosure>,
 }
@@ -51,6 +50,84 @@ impl CallFrame {
     fn closure(&self) -> &ObjClosure {
         self.closure.as_ref()
     }
+    #[inline]
+    fn index(&self, index: usize) -> Value {
+        unsafe { *self.slots_ptr.add(index) }
+    }
+    #[inline]
+    fn index_ptr(&self, index: usize) -> *mut Value {
+        unsafe { self.slots_ptr.add(index) }
+    }
+    fn set(&mut self, index: usize, value: Value) {
+        unsafe {
+            *self.slots_ptr.add(index) = value;
+        }
+    }
+}
+
+pub struct StackIter {
+    stack: *mut Value,
+    end: *mut Value,
+}
+
+impl Iterator for StackIter {
+    type Item = Value;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.stack >= self.end {
+            None
+        } else {
+            let value = unsafe { *self.stack };
+            self.stack = unsafe { self.stack.add(1) };
+            Some(value)
+        }
+    }
+}
+
+pub struct Stack {
+    pub stack: *mut Value,
+    pub top: *mut Value,
+}
+
+impl Stack {
+    fn top(&self) -> Value {
+        unsafe {
+            let val = *(self.top.offset(1));
+            val
+        }
+    }
+
+    fn peek(&self, dist: u32) -> Value {
+        unsafe { *self.top.offset(-(dist as isize + 1)) }
+    }
+
+    fn set(&self, dist: u32, value: Value) {
+        unsafe {
+            *self.top.offset(-(dist as isize + 1)) = value;
+        }
+    }
+
+    fn iter(&self) -> StackIter {
+        // let take_amount = self.top as usize - self.stack.as_ptr() as usize;
+        // self.stack
+        //     .iter()
+        //     .take(take_amount)
+        //     .map(|val| unsafe { val.assume_init_read() })
+        StackIter {
+            stack: self.stack,
+            end: self.top,
+        }
+    }
+
+    pub fn add(&mut self, amount: u32) {
+        self.offset(amount as isize)
+    }
+    pub fn sub(&mut self, amount: u32) {
+        self.offset(-(amount as isize))
+    }
+    pub fn offset(&mut self, offset: isize) {
+        self.top = unsafe { self.top.offset(offset) };
+    }
 }
 
 pub const U8_COUNT: usize = (u8::MAX) as usize + 1; // 256
@@ -59,10 +136,9 @@ pub const STACK_MAX: usize = 64 * U8_COUNT;
 pub static mut STACK: [MaybeUninit<Value>; STACK_MAX] = [MaybeUninit::uninit(); STACK_MAX];
 pub type ValueStack = [MaybeUninit<Value>; STACK_MAX];
 
-pub struct VM<'b> {
-    pub stack: &'b mut [MaybeUninit<Value>; STACK_MAX],
-    marker: std::marker::PhantomData<&'b ()>,
-    pub stack_top: u32,
+pub struct VM {
+    pub stack: Stack,
+
     /// linked list of open upvalues for the top-most stack,
     /// this points to the top-most open upvalue
     /// (so last in this list is the first open upvalue on the stack)
@@ -77,60 +153,59 @@ pub struct VM<'b> {
     pub init_string: Gc<ObjString>,
 }
 
-impl<'b> VM<'b> {
-    pub fn new(
-        stack: &'b mut [MaybeUninit<Value>; STACK_MAX],
-        mut mem: Mem,
-        function: Gc<ObjFunction>,
-    ) -> Self {
-        let closure = mem.alloc_obj(ObjClosure::new(function));
+impl VM {
+    pub fn init(&mut self, function: Gc<ObjFunction>) {
+        let closure = self.mem.alloc_obj(ObjClosure::new(function));
 
-        let mut call_frames = [MaybeUninit::uninit(); FRAMES_MAX];
-        call_frames[0] = MaybeUninit::new(CallFrame {
+        self.call_frames[0] = MaybeUninit::new(CallFrame {
             instr_offset: 0,
-            slots_offset: 0,
+            slots_ptr: self.stack.stack,
             closure,
         });
 
-        stack[0] = MaybeUninit::new(Value::Obj(closure.cast()));
+        unsafe {
+            *self.stack.stack = Value::Obj(closure.cast());
+            self.stack.top = self.stack.stack.add(1);
+        }
+        self.define_native("clock", NativeFnKind::Clock);
+        self.define_native("__dummy", NativeFnKind::Dummy);
 
-        let mut this = Self {
-            init_string: mem.copy_string("init"),
-            mem,
-            open_upvalues: null_mut(),
-            stack,
-            marker: Default::default(),
-            stack_top: 1,
-            call_frames,
-            call_frame_count: 1,
-            grey_stack: vec![],
-        };
-
-        this.define_native("clock", NativeFnKind::Clock);
-        this.define_native("__dummy", NativeFnKind::Dummy);
+        self.call_frame_count = 1;
 
         #[cfg(debug_assertions)]
         {
             println!("OBJECT LIST!");
-            for obj in &this.mem.obj_list {
+            for obj in &self.mem.obj_list {
                 println!("{:?}", ObjPtrWrapper(obj.as_ptr()));
             }
             println!("END OBJECT LIST");
         }
-
-        this
     }
 
-    fn iter_stack(
-        &self,
-    ) -> std::iter::Map<
-        std::iter::Take<std::slice::Iter<MaybeUninit<Value>>>,
-        fn(&MaybeUninit<Value>) -> Value,
-    > {
-        self.stack
-            .iter()
-            .take(self.stack_top as usize)
-            .map(|val| unsafe { val.assume_init_read() })
+    pub fn new() -> Self {
+        let mut mem = Mem::new();
+        let mut stack = Vec::<Value>::with_capacity(STACK_MAX);
+        // let raw = Box::into_raw(stack.into_boxed_slice());
+
+        let raw = stack.as_mut_ptr();
+        stack.leak();
+
+        Self {
+            init_string: mem.copy_string("init"),
+            stack: Stack {
+                stack: raw,
+                top: null_mut(),
+            },
+            open_upvalues: null_mut(),
+            call_frames: [MaybeUninit::uninit(); FRAMES_MAX],
+            call_frame_count: 0,
+            mem,
+            grey_stack: vec![],
+        }
+    }
+
+    fn iter_stack(&self) -> StackIter {
+        self.stack.iter()
     }
 
     fn iter_frames(
@@ -281,20 +356,21 @@ impl<'b> VM<'b> {
         // unsafe {
         //     *self.stack.as_mut_ptr().add(self.stack_top as usize) = MaybeUninit::new(val);
         // }
-        self.stack[self.stack_top as usize] = MaybeUninit::new(val);
-        self.stack_top += 1;
+        unsafe {
+            *(self.stack.top) = val;
+            self.stack.offset(1);
+        }
     }
 
     #[inline]
     fn pop(&mut self) -> Value {
-        self.stack_top -= 1;
-        unsafe { MaybeUninit::assume_init(self.stack[self.stack_top as usize]) }
+        self.stack.sub(1);
+        unsafe { *self.stack.top }
     }
 
     #[inline]
     fn binary_op<F: FnOnce(Value, Value) -> Value>(&mut self, f: F) -> InterpretResult<()> {
         if !matches!(self.peek(0), Value::Number(_)) || !matches!(self.peek(1), Value::Number(_)) {
-            println!("NOOB: {:?} {:?}", self.peek(0), self.peek(1));
             self.runtime_error("Operands must be two numbers or two strings.".into());
             return Err(InterpretError::RuntimeError);
         }
@@ -308,7 +384,7 @@ impl<'b> VM<'b> {
 
     #[inline]
     fn reset_stack(&mut self) {
-        self.stack_top = 0;
+        self.stack.top = self.stack.stack;
         self.call_frame_count = 0;
         self.open_upvalues = null_mut();
     }
@@ -347,7 +423,7 @@ impl<'b> VM<'b> {
     }
 
     fn peek(&self, distance: u32) -> Value {
-        unsafe { self.stack[self.stack_top as usize - 1 - distance as usize].assume_init() }
+        self.stack.peek(distance)
     }
 
     fn concatenate(&mut self) {
@@ -417,16 +493,16 @@ impl<'b> VM<'b> {
         self.push(name);
         self.push(native_fn);
 
-        unsafe {
-            self.mem.globals.set(
-                self.stack[self.stack_top as usize - 2]
-                    .assume_init()
-                    .as_obj_str()
-                    .unwrap()
-                    .as_non_null_ptr(),
-                self.stack[self.stack_top as usize - 1].assume_init(),
-            );
-        }
+        self.mem.globals.set(
+            // self.stack[self.stack_top as usize - 2]
+            //     .assume_init()
+            //     .as_obj_str()
+            //     .unwrap()
+            //     .as_non_null_ptr(),
+            // self.stack[self.stack_top as usize - 1].assume_init(),
+            self.stack.peek(1).as_obj_str().unwrap().as_non_null_ptr(),
+            self.stack.peek(0),
+        );
 
         self.pop();
         self.pop();
@@ -440,8 +516,8 @@ impl<'b> VM<'b> {
                     ObjKind::Class => {
                         let class: Gc<ObjClass> = obj.cast();
                         let instance = self.alloc_obj(ObjInstance::new(class));
-                        self.stack[self.stack_top as usize - arg_count as usize - 1] =
-                            MaybeUninit::new(Value::Obj(instance.cast()));
+                        self.stack
+                            .set(arg_count as u32, Value::Obj(instance.cast()));
 
                         if let Some(initializer) = class
                             .as_ref()
@@ -463,19 +539,24 @@ impl<'b> VM<'b> {
                     ObjKind::Closure => return self.call(obj.cast(), arg_count),
                     ObjKind::Native => {
                         let native: Gc<ObjNative> = obj.cast();
-                        let stack_begin = self.stack_top as usize - arg_count as usize;
-                        let values = &self.stack[stack_begin..];
+                        let values = unsafe {
+                            std::slice::from_raw_parts(
+                                self.stack.top.sub(arg_count as usize),
+                                arg_count as usize,
+                            )
+                        };
                         let result =
                             unsafe { native.as_ref().function.call(std::mem::transmute(values)) };
 
-                        self.stack_top -= arg_count as u32 + 1;
+                        self.stack.sub(arg_count as u32 + 1);
+
                         self.push(result);
                         return true;
                     }
                     ObjKind::BoundMethod => {
                         let bound: Gc<ObjBoundMethod> = obj.cast();
-                        self.stack[self.stack_top as usize - arg_count as usize - 1] =
-                            MaybeUninit::new(bound.as_ref().receiver);
+                        self.stack
+                            .set(arg_count as u32 + 1, bound.as_ref().receiver);
                         return self.call(bound.method, arg_count);
                     }
                     _ => (),
@@ -488,11 +569,8 @@ impl<'b> VM<'b> {
         false
     }
 
-    fn capture_upvalue(&mut self, offset: u8) -> Gc<ObjUpvalue> {
-        let slot = self.top_call_frame().slots_offset;
-
-        let local = NonNull::new(self.stack[slot as usize + offset as usize].as_mut_ptr()).unwrap();
-
+    fn capture_upvalue(&mut self, local: NonNull<Value>) -> Gc<ObjUpvalue> {
+        let local_addr = local.as_ptr() as usize;
         unsafe {
             let mut prev_upvalue: *mut ObjUpvalue = null_mut();
             let mut upvalue: *mut ObjUpvalue = self.open_upvalues;
@@ -500,14 +578,14 @@ impl<'b> VM<'b> {
             // the list is sorted in stack order (first upvalue location points to top-most local)
             // so we keep iterating skipping upvalues whose location is above our desired, hence the
             // `(*upvalue).location > local`
-            while !upvalue.is_null() && (*upvalue).location > local {
+            while !upvalue.is_null() && (*upvalue).location.as_ptr() as usize > local_addr {
                 prev_upvalue = upvalue;
                 upvalue = (*upvalue).next;
             }
 
             match NonNull::new(upvalue) {
                 // found a captured upvalue, reuse it
-                Some(upvalue_nonnull) if (*upvalue).location == local => {
+                Some(upvalue_nonnull) if (*upvalue).location.as_ptr() as usize == local_addr => {
                     return Gc::new(upvalue_nonnull)
                 }
                 _ => (),
@@ -537,7 +615,10 @@ impl<'b> VM<'b> {
                 let index = self.read_byte();
 
                 let upvalue = if is_local {
-                    self.capture_upvalue(index).as_ptr()
+                    self.capture_upvalue(
+                        NonNull::new(self.top_call_frame().index_ptr(index as usize)).unwrap(),
+                    )
+                    .as_ptr()
                 } else {
                     // at this point we haven't switched call frame to closure yet, so we
                     // read from current call frame which is actually closure's surrounding call frame
@@ -556,24 +637,25 @@ impl<'b> VM<'b> {
     }
 
     /// Closes upvalues of a scope
-    fn close_upvalues(&mut self, last_stack_offset: u32) {
+    fn close_upvalues(&mut self, last: *mut Value) {
         unsafe {
-            let last = NonNull::new(self.stack[last_stack_offset as usize].as_mut_ptr()).unwrap();
             while let Some(upvalue) = NonNull::new(self.open_upvalues) {
-                if (*upvalue.as_ptr()).location < last {
+                if ((*upvalue.as_ptr()).location.as_ptr() as usize) < (last as usize) {
                     return;
                 }
 
                 let upvalue_ptr = upvalue.as_ptr();
 
                 // why does this work
-                let location_ptr = (*upvalue_ptr).location;
-                let offset = location_ptr.as_ptr().sub_ptr(self.stack.as_ptr() as *mut _);
-                let closed = self.stack[offset];
-                (*upvalue_ptr).closed = closed.assume_init();
+                // let location_ptr = (*upvalue_ptr).location;
+                // let offset = location_ptr.as_ptr().sub_ptr(self.stack.as_ptr() as *mut _);
+                // let closed = self.stack[offset];
+                // (*upvalue_ptr).closed = closed.assume_init();
 
                 // but this doesn't? are we sidestepping miri somehow?
                 // (*upvalue_ptr).closed = *((*upvalue_ptr).location.as_ptr() as *const _);
+
+                (*upvalue_ptr).closed = *(*upvalue_ptr).location.as_ptr();
 
                 (*upvalue_ptr).location =
                     NonNull::new(addr_of_mut!((*upvalue_ptr).closed)).unwrap();
@@ -622,7 +704,7 @@ impl<'b> VM<'b> {
         };
 
         if let Some(field) = instance.fields.get(name.as_non_null_ptr()) {
-            self.stack[self.stack_top as usize - arg_count as usize - 1] = MaybeUninit::new(field);
+            self.stack.set(arg_count as u32, field);
             return self.call_value(field, arg_count);
         }
 
@@ -653,11 +735,13 @@ impl<'b> VM<'b> {
             #[cfg(debug_assertions)]
             {
                 // Debug frame window
-                let slot_offset = self.top_call_frame().slots_offset;
-                println!("          Frame slot offset: {}", slot_offset);
+                let slot_addr = self.top_call_frame().slots_ptr as usize;
+                println!("          Frame slot addr: {}", slot_addr);
                 // Debug stack
-                for (i, slot) in self.stack.iter().take(self.stack_top as usize).enumerate() {
-                    let value: &Value = unsafe { slot.assume_init_ref() };
+                let take_amount =
+                    (self.stack.top as usize - slot_addr) / std::mem::size_of::<Value>();
+                for (i, slot) in self.stack.iter().take(take_amount).enumerate() {
+                    let value = slot;
                     println!("          {i}: {value:?}");
                 }
 
@@ -784,7 +868,7 @@ impl<'b> VM<'b> {
                     self.push(Value::Obj(class.cast()));
                 }
                 Some(Opcode::CloseUpvalue) => {
-                    self.close_upvalues(self.stack_top - 1);
+                    self.close_upvalues(unsafe { self.stack.top.sub(1) });
                     self.pop();
                 }
                 Some(Opcode::GetUpvalue) => {
@@ -850,17 +934,14 @@ impl<'b> VM<'b> {
                 }
                 Some(Opcode::GetLocal) => {
                     let slot = self.read_byte();
-                    let slot_offset = self.top_call_frame().slots_offset;
-                    let val =
-                        unsafe { self.stack[slot as usize + slot_offset as usize].assume_init() };
+                    let val = self.top_call_frame().index(slot as usize);
 
                     self.push(val);
                 }
                 Some(Opcode::SetLocal) => {
                     let slot = self.read_byte();
-                    let slot_offset = self.top_call_frame().slots_offset;
-                    self.stack[slot as usize + slot_offset as usize] =
-                        MaybeUninit::new(self.peek(0));
+                    let val = self.peek(0);
+                    self.top_call_frame_mut().set(slot as usize, val);
                 }
                 Some(Opcode::SetGlobal) => {
                     let name = self
@@ -948,10 +1029,9 @@ impl<'b> VM<'b> {
                     }
 
                     let result = self.pop();
-                    let slots_offset = self.top_call_frame().slots_offset;
-                    self.close_upvalues(slots_offset);
+                    self.close_upvalues(self.top_call_frame().slots_ptr);
 
-                    self.stack_top = self.top_call_frame().slots_offset;
+                    self.stack.top = self.top_call_frame().slots_ptr;
                     self.call_frame_count -= 1;
                     self.push(result);
                 }
@@ -962,7 +1042,9 @@ impl<'b> VM<'b> {
                 Some(Opcode::Subtract) => self.binary_op(std::ops::Sub::sub)?,
                 Some(Opcode::Multiply) => self.binary_op(std::ops::Mul::mul)?,
                 Some(Opcode::Divide) => self.binary_op(std::ops::Div::div)?,
-                Some(Opcode::Greater) => self.binary_op(Value::gt_owned)?,
+                Some(Opcode::Greater) => {
+                    self.binary_op(Value::gt_owned)?;
+                }
                 Some(Opcode::Less) => self.binary_op(Value::lt_owned)?,
                 Some(Opcode::Add) => {
                     if self.peek(0).is_str() && self.peek(1).is_str() {
@@ -993,7 +1075,7 @@ impl<'b> VM<'b> {
         self.call_frame_count += 1;
         unsafe {
             (*call_frame).instr_offset = 0;
-            (*call_frame).slots_offset = self.stack_top - arg_count as u32 - 1;
+            (*call_frame).slots_ptr = self.stack.top.offset(-(arg_count as isize) - 1);
             (*call_frame).closure = closure;
         }
     }

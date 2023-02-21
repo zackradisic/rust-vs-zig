@@ -44,7 +44,8 @@ fn main() {
             repl();
         }
         1 => {
-            run_file(args.next().unwrap());
+            let mut vm = VM::new();
+            run_file(&mut vm, args.next().unwrap());
         }
         _ => panic!(),
     }
@@ -53,35 +54,30 @@ fn main() {
 fn repl() {
     let stdin = std::io::stdin();
     let lines = stdin.lock().lines();
+    let mut vm = VM::new();
 
     for line in lines {
         let line = line.unwrap();
-        let mut stack: ValueStack = [MaybeUninit::uninit(); STACK_MAX];
-        interpret(&mut stack, &line).unwrap();
+        interpret(&mut vm, &line).unwrap();
     }
 }
 
-fn run_file<P: AsRef<Path>>(path: P) {
-    let mut stack: ValueStack = [MaybeUninit::uninit(); STACK_MAX];
+fn run_file<P: AsRef<Path>>(vm: &mut VM, path: P) {
     let string = std::fs::read_to_string(path).unwrap();
-    interpret(&mut stack, &string).unwrap();
+    interpret(vm, &string).unwrap();
 }
 
-fn interpret<'a>(stack: &'a mut ValueStack, src: &str) -> InterpretResult<VM<'a>> {
-    let mut mem = Mem::new();
-
+fn interpret(vm: &mut VM, src: &str) -> InterpretResult<()> {
     let function = {
-        let mut parser = Parser::new(src, &mut mem);
+        let mut parser = Parser::new(src, &mut vm.mem);
         if !parser.compile() {
             return Err(InterpretError::CompileError);
         }
         parser.compiler.function
     };
+    vm.init(function);
 
-    // let stack = Box::leak(Box::new([MaybeUninit::uninit(); STACK_MAX]));
-    let mut vm = VM::new(stack, mem, function);
-
-    vm.run().map(|_| vm)
+    vm.run()
 }
 
 #[cfg(test)]
@@ -95,7 +91,7 @@ mod test {
         mem::Mem,
         table::Table,
         value::Value,
-        vm::{InterpretError, ValueStack, STACK_MAX},
+        vm::{InterpretError, ValueStack, STACK_MAX, VM},
     };
 
     #[test]
@@ -111,8 +107,8 @@ fun fib(x) {
 var result = fib(2);
 "#;
 
-        let mut stack: ValueStack = [MaybeUninit::uninit(); STACK_MAX];
-        let mut vm = interpret(&mut stack, src).unwrap();
+        let mut vm = VM::new();
+        interpret(&mut vm, src).unwrap();
         let result_var_str = vm.get_string("result").as_non_null_ptr();
         let value = vm.mem.globals.get(result_var_str);
         assert_eq!(value.unwrap(), Value::Number(1.0));
@@ -143,8 +139,8 @@ var cruller = Cruller();
 var result = cruller.finish("noice");
 "#;
 
-        let mut stack: ValueStack = [MaybeUninit::uninit(); STACK_MAX];
-        let mut vm = interpret(&mut stack, src).unwrap();
+        let mut vm = VM::new();
+        interpret(&mut vm, src).unwrap();
         let result_var_str = vm.get_string("result").as_non_null_ptr();
         let value = vm.mem.globals.get(result_var_str);
         assert_eq!(value.unwrap().as_str().unwrap(), "Finish with icing");
@@ -167,8 +163,8 @@ var result = cruller.finish("noice");
         var result = oops.field();
         "#;
 
-        let mut stack: ValueStack = [MaybeUninit::uninit(); STACK_MAX];
-        let mut vm = interpret(&mut stack, src).unwrap();
+        let mut vm = VM::new();
+        interpret(&mut vm, src).unwrap();
         let result_str = vm.get_string("result").as_non_null_ptr();
         let value = vm.mem.globals.get(result_str);
         assert_eq!(value, Some(Value::Number(420.0)));
@@ -182,8 +178,8 @@ var result = cruller.finish("noice");
         }
         "#;
 
-        let mut stack: ValueStack = [MaybeUninit::uninit(); STACK_MAX];
-        let err = interpret(&mut stack, src);
+        let mut vm = VM::new();
+        let err = interpret(&mut vm, src);
         if let Err(InterpretError::CompileError) = err {
         } else {
             panic!()
@@ -206,8 +202,8 @@ var result = cruller.finish("noice");
         nested.lol = 420;
         var result = nested.method();"#;
 
-        let mut stack: ValueStack = [MaybeUninit::uninit(); STACK_MAX];
-        let mut vm = interpret(&mut stack, src).unwrap();
+        let mut vm = VM::new();
+        interpret(&mut vm, src).unwrap();
         let result_str = vm.get_string("result").as_non_null_ptr();
         let value = vm.mem.globals.get(result_str);
         assert_eq!(value, Some(Value::Number(420.0)));
@@ -226,8 +222,8 @@ var result = cruller.finish("noice");
         nested.lol = 420;
         var result = nested.method();"#;
 
-        let mut stack: ValueStack = [MaybeUninit::uninit(); STACK_MAX];
-        let mut vm = interpret(&mut stack, src).unwrap();
+        let mut vm = VM::new();
+        interpret(&mut vm, src).unwrap();
         let result_str = vm.get_string("result").as_non_null_ptr();
         let value = vm.mem.globals.get(result_str);
         assert_eq!(value, Some(Value::Number(420.0)));
@@ -244,8 +240,8 @@ var result = cruller.finish("noice");
           
           var scone = Scone();
           var result = scone.topping("berries", "cream");"#;
-        let mut stack: ValueStack = [MaybeUninit::uninit(); STACK_MAX];
-        let mut vm = interpret(&mut stack, src).unwrap();
+        let mut vm = VM::new();
+        interpret(&mut vm, src).unwrap();
 
         let result_str = vm.get_string("result").as_non_null_ptr();
 
@@ -265,8 +261,8 @@ var pair = Pair();
 pair.first = 1;
 pair.second = 2;
 var result = pair.first + pair.second;"#;
-        let mut stack: ValueStack = [MaybeUninit::uninit(); STACK_MAX];
-        let mut vm = interpret(&mut stack, src).unwrap();
+        let mut vm = VM::new();
+        interpret(&mut vm, src).unwrap();
 
         let result_str = vm.get_string("result").as_non_null_ptr();
 
@@ -292,8 +288,8 @@ var result = pair.first + pair.second;"#;
     var anotherClosure = makeClosure();
     var second = anotherClosure();
     var third = closure();"#;
-        let mut stack: ValueStack = [MaybeUninit::uninit(); STACK_MAX];
-        let mut vm = interpret(&mut stack, src).unwrap();
+        let mut vm = VM::new();
+        interpret(&mut vm, src).unwrap();
 
         let first_str = vm.get_string("first").as_non_null_ptr();
         let second_str = vm.get_string("second").as_non_null_ptr();
@@ -320,8 +316,8 @@ var result = pair.first + pair.second;"#;
       return inner();
     }
     var value = outer();"#;
-        let mut stack: ValueStack = [MaybeUninit::uninit(); STACK_MAX];
-        let mut vm = interpret(&mut stack, src).unwrap();
+        let mut vm = VM::new();
+        interpret(&mut vm, src).unwrap();
         let value_str = vm.get_string("value").as_non_null_ptr();
 
         let value = vm.mem.globals.get(value_str);
@@ -341,8 +337,8 @@ fun outer() {
   inner();
 }
 outer();"#;
-        let mut stack: ValueStack = [MaybeUninit::uninit(); STACK_MAX];
-        let mut vm = interpret(&mut stack, src).unwrap();
+        let mut vm = VM::new();
+        interpret(&mut vm, src).unwrap();
         let result_str = vm.get_string("result").as_non_null_ptr();
         let value = vm.mem.globals.get(result_str);
 
@@ -353,8 +349,8 @@ outer();"#;
     fn call_native_fn() {
         let src = r#"
         var num = __dummy();"#;
-        let mut stack: ValueStack = [MaybeUninit::uninit(); STACK_MAX];
-        let mut vm = interpret(&mut stack, src).unwrap();
+        let mut vm = VM::new();
+        interpret(&mut vm, src).unwrap();
         let num_str = vm.get_string("num").as_non_null_ptr();
         let value = vm.mem.globals.get(num_str);
         assert_eq!(value, Some(Value::Number(420.0)));
@@ -374,8 +370,8 @@ outer();"#;
             var num = add420(1);
             num = add69(num);
             num = add420(num);"#;
-        let mut stack: ValueStack = [MaybeUninit::uninit(); STACK_MAX];
-        let mut vm = interpret(&mut stack, src).unwrap();
+        let mut vm = VM::new();
+        interpret(&mut vm, src).unwrap();
         let num_str = vm.get_string("num").as_non_null_ptr();
         let value = vm.mem.globals.get(num_str);
         assert_eq!(value, Some(Value::Number(910.0)));
@@ -389,8 +385,8 @@ outer();"#;
             }
 
             print bigNoob;"#;
-        let mut stack: ValueStack = [MaybeUninit::uninit(); STACK_MAX];
-        let _vm = interpret(&mut stack, src).unwrap();
+        let mut vm = VM::new();
+        interpret(&mut vm, src).unwrap();
     }
 
     #[test]
@@ -399,8 +395,8 @@ outer();"#;
             var noob = 420;
             if (420 > 69) { noob = "NICE"; } else { noob = "NOT NICE"; }
     "#;
-        let mut stack: ValueStack = [MaybeUninit::uninit(); STACK_MAX];
-        let mut vm = interpret(&mut stack, src).unwrap();
+        let mut vm = VM::new();
+        interpret(&mut vm, src).unwrap();
 
         let noob = vm.get_string("noob").as_non_null_ptr();
         let top = vm.mem.globals.get(noob);
@@ -413,8 +409,8 @@ outer();"#;
             var noob = 420;
             if (69 > 420) { noob = "wtf"; } else { noob = "NICE"; }
     "#;
-        let mut stack: ValueStack = [MaybeUninit::uninit(); STACK_MAX];
-        let mut vm = interpret(&mut stack, src).unwrap();
+        let mut vm = VM::new();
+        interpret(&mut vm, src).unwrap();
 
         let noob = vm.get_string("noob").as_non_null_ptr();
         let top = vm.mem.globals.get(noob);
@@ -429,8 +425,8 @@ outer();"#;
               noob = noob + 1;
             }
     "#;
-        let mut stack: ValueStack = [MaybeUninit::uninit(); STACK_MAX];
-        let mut vm = interpret(&mut stack, src).unwrap();
+        let mut vm = VM::new();
+        interpret(&mut vm, src).unwrap();
 
         let noob = vm.get_string("noob").as_non_null_ptr();
         let top = vm.mem.globals.get(noob);
@@ -445,8 +441,8 @@ outer();"#;
               noob = x;
             }
     "#;
-        let mut stack: ValueStack = [MaybeUninit::uninit(); STACK_MAX];
-        let _vm = interpret(&mut stack, src).unwrap();
+        let mut vm = VM::new();
+        interpret(&mut vm, src).unwrap();
 
         // let noob = vm.get_string("global");
         // let top = vm.mem.globals.get(noob);
@@ -459,8 +455,8 @@ outer();"#;
             var global = 420;
             { var x = "HELLO"; x = "NICE"; global = x; }
     "#;
-        let mut stack: ValueStack = [MaybeUninit::uninit(); STACK_MAX];
-        let mut vm = interpret(&mut stack, src).unwrap();
+        let mut vm = VM::new();
+        interpret(&mut vm, src).unwrap();
 
         let noob = vm.get_string("global").as_non_null_ptr();
         let top = vm.mem.globals.get(noob);
@@ -470,8 +466,8 @@ outer();"#;
     #[test]
     fn string() {
         let src = r#"var noob = "hello" + " sir" + " sir";"#;
-        let mut stack: ValueStack = [MaybeUninit::uninit(); STACK_MAX];
-        let mut vm = interpret(&mut stack, src).unwrap();
+        let mut vm = VM::new();
+        interpret(&mut vm, src).unwrap();
 
         let noob = vm.get_string("noob").as_non_null_ptr();
         let top = vm.mem.globals.get(noob);
@@ -481,8 +477,8 @@ outer();"#;
     #[test]
     fn print() {
         let src = r#"print 1 + 2;"#;
-        let mut stack: ValueStack = [MaybeUninit::uninit(); STACK_MAX];
-        let _vm = interpret(&mut stack, src).unwrap();
+        let mut vm = VM::new();
+        interpret(&mut vm, src).unwrap();
     }
 
     #[test]
@@ -533,22 +529,22 @@ outer();"#;
         println!("{jump} NOOB: {chunk:?} JUMP: {val} {}", 2u16);
     }
 
-    #[test]
-    fn miri_test() {
-        let mut obj = Box::into_raw(Box::new(69));
-        let mut obj2 = unsafe { obj.as_mut().unwrap() };
-        let foo = unsafe { *obj };
-        *obj2 = 9999;
-    }
-    #[test]
-    fn miri_test2() {
-        let mut obj = Box::into_raw(Box::new(69));
-        let mut obj2 = unsafe { obj.as_mut().unwrap() };
-        unsafe {
-            *obj = 420;
-        };
-        *obj2 = 9999;
-    }
+    // #[test]
+    // fn miri_test() {
+    //     let mut obj = Box::into_raw(Box::new(69));
+    //     let mut obj2 = unsafe { obj.as_mut().unwrap() };
+    //     let foo = unsafe { *obj };
+    //     *obj2 = 9999;
+    // }
+    // #[test]
+    // fn miri_test2() {
+    //     let mut obj = Box::into_raw(Box::new(69));
+    //     let mut obj2 = unsafe { obj.as_mut().unwrap() };
+    //     unsafe {
+    //         *obj = 420;
+    //     };
+    //     *obj2 = 9999;
+    // }
 }
 
 fn _f(_a: i32, _b: i32) -> i32 {
