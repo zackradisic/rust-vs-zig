@@ -4,3 +4,6 @@
 [submodule "zlox/libs/ztracy"]
 	path = zlox/libs/ztracy
 	url = https://github.com/michal-z/zig-gamedev
+[submodule "loxide/generational-arena"]
+	path = loxide/generational-arena
+	url = https://github.com/fitzgen/generational-arena

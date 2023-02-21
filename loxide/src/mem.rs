@@ -12,37 +12,6 @@ use crate::{
 
 pub type Greystack = Vec<NonNull<Obj>>;
 
-// Borrowed from https://github.com/ceronman/loxido/blob/a605c17e4d35bc75022e65387c200201704ec37c/src/gc.rs#L286
-// pub struct GlobalAllocator {
-//     bytes_allocated: usize,
-// }
-
-// impl GlobalAllocator {
-//     pub fn bytes_allocated(&self) -> usize {
-//         self.bytes_allocated
-//             .load(std::sync::atomic::Ordering::Relaxed)
-//     }
-// }
-
-// unsafe impl alloc::GlobalAlloc for GlobalAllocator {
-//     unsafe fn alloc(&self, layout: alloc::Layout) -> *mut u8 {
-//         self.bytes_allocated
-//             .fetch_add(layout.size(), std::sync::atomic::Ordering::Relaxed);
-//         System.allocate(layout).unwrap().as_non_null_ptr().as_ptr()
-//         // mimalloc::MiMalloc.alloc(layout)
-//     }
-
-//     unsafe fn dealloc(&self, ptr: *mut u8, layout: alloc::Layout) {
-//         System.deallocate(NonNull::new(ptr).unwrap(), layout);
-//         // mimalloc::MiMalloc.dealloc(ptr, layout);
-//         self.bytes_allocated
-//             .fetch_sub(layout.size(), std::sync::atomic::Ordering::Relaxed);
-//     }
-// }
-
-// #[global_allocator]
-// pub static GLOBAL: GlobalAllocator = GlobalAllocator { bytes_allocated: 0 };
-
 pub struct Mem {
     pub obj_list: ObjList,
     pub globals: Table,

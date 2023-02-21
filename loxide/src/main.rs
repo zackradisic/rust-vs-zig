@@ -5,6 +5,7 @@
 
 pub mod chunk;
 pub mod compile;
+pub mod generational_arena;
 pub mod mem;
 pub mod native_fn;
 pub mod obj;
