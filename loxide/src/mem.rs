@@ -371,7 +371,7 @@ impl Mem {
     }
 
     #[inline]
-    pub fn intern_string2(&mut self, obj_string: ObjString) {
+    pub fn intern_string2(&mut self, obj_string: ObjStringId) {
         self.interned_strings2.set(obj_string, Value::Nil);
     }
 
