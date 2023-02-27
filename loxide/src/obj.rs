@@ -1,9 +1,12 @@
 use std::{
     alloc::{self, Layout},
     collections::VecDeque,
+    num::{NonZeroU32, NonZeroU64},
     ptr::NonNull,
     slice,
 };
+
+use generational_arena::GenerationCounter;
 
 use crate::{
     chunk::Chunk,
@@ -69,7 +72,7 @@ impl ObjPunnable for ObjBoundMethod {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ObjKind {
-    Str,
+    Str = 0,
     Fn,
     Native,
     Closure,
@@ -77,6 +80,32 @@ pub enum ObjKind {
     Class,
     Instance,
     BoundMethod,
+}
+impl ObjKind {
+    pub const STR: u8 = 0;
+    pub const FN: u8 = 1;
+    pub const NATIVE: u8 = 2;
+    pub const CLOSURE: u8 = 3;
+    pub const UPVALUE: u8 = 4;
+    pub const CLASS: u8 = 5;
+    pub const INSTANCE: u8 = 6;
+    pub const BOUND_METHOD: u8 = 7;
+}
+impl From<u8> for ObjKind {
+    fn from(value: u8) -> Self {
+        use ObjKind::*;
+        match value {
+            0 => Str,
+            1 => Fn,
+            2 => Native,
+            3 => Closure,
+            4 => Upvalue,
+            5 => Class,
+            6 => Instance,
+            7 => BoundMethod,
+            otherwise => panic!("unknown: {}", otherwise),
+        }
+    }
 }
 
 #[repr(C)]

@@ -5,12 +5,15 @@
 
 pub mod chunk;
 pub mod compile;
-pub mod generational_arena;
 pub mod mem;
 pub mod native_fn;
 pub mod obj;
+pub mod obj2;
+pub mod obj_id;
 pub mod table;
+pub mod table2;
 pub mod value;
+pub mod value2;
 pub mod vm;
 
 use std::{io::BufRead, mem::MaybeUninit, path::Path};

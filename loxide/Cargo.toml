@@ -9,6 +9,8 @@ edition = "2021"
 cfg-if = "1.0.0"
 fnv = "1.0.7"
 mimalloc = "0.1.30"
+generational-arena = {path="./generational-arena"}
+compact_str = "0.6.1"
 
 [features]
 default = []
