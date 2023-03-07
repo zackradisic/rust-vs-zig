@@ -97,4 +97,14 @@ pub fn build(b: *std.build.Builder) void {
 
     const run_step = b.step("run", "Run the app");
     run_step.dependOn(&run_cmd.step);
+
+    const test_filter = b.option([]const u8, "test-filter", "Skip tests that do not match filter");
+    const main_tests = b.addTestExe("test", "src/main.zig");
+    main_tests.setBuildMode(mode);
+    main_tests.addOptions("build_options", opt);
+    main_tests.setFilter(test_filter);
+    main_tests.install();
+
+    const test_step = b.step("test", "Run library tests");
+    test_step.dependOn(&main_tests.step);
 }
