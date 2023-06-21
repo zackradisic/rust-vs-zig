@@ -13,3 +13,8 @@ mimalloc = "0.1.30"
 default = []
 debug_gc = []
 always_gc = []
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
